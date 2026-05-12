@@ -1,0 +1,182 @@
+{
+  "url": "http://localhost:50591",
+  "startedAt": 1773114971260,
+  "finishedAt": 1773114982255,
+  "errors": {
+    "js": [
+      {
+        "type": "console",
+        "message": "Failed to load resource: the server responded with a status of 404 (Not Found) {\"url\":\"http://localhost:50591/vite.svg?__aidp_probe=1773114979329\",\"lineNumber\":0,\"columnNumber\":0}",
+        "timestamp": 1773114979336,
+        "severity": "error",
+        "phase": "init"
+      }
+    ],
+    "network": [
+      {
+        "url": "http://localhost:50591/vite.svg?__aidp_probe=1773114979329",
+        "type": "image",
+        "method": "GET",
+        "status": 404,
+        "ok": false,
+        "from": "network"
+      }
+    ],
+    "images": []
+  },
+  "styleAudit": {
+    "rate": 0,
+    "unuseClasses": [],
+    "unuseCount": 0,
+    "definedCount": 175,
+    "scannedElementCount": 112,
+    "inaccessibleStyleSheets": 0
+  },
+  "perfTags": [
+    {
+      "name": "lcp",
+      "value": 228,
+      "unit": "ms",
+      "source": "performance",
+      "category": "good"
+    },
+    {
+      "name": "cls",
+      "value": 0,
+      "unit": "unitless",
+      "source": "performance",
+      "category": "good"
+    },
+    {
+      "name": "fcp",
+      "value": 228,
+      "unit": "ms",
+      "source": "performance",
+      "category": "good"
+    },
+    {
+      "name": "ttfb",
+      "value": 10.433333337306976,
+      "unit": "ms",
+      "source": "performance",
+      "category": "good"
+    }
+  ],
+  "perfProfiles": [
+    {
+      "profile": "unthrottled",
+      "tags": [
+        {
+          "name": "lcp",
+          "value": 228,
+          "unit": "ms",
+          "source": "performance",
+          "category": "good"
+        },
+        {
+          "name": "cls",
+          "value": 0,
+          "unit": "unitless",
+          "source": "performance",
+          "category": "good"
+        },
+        {
+          "name": "fcp",
+          "value": 228,
+          "unit": "ms",
+          "source": "performance",
+          "category": "good"
+        },
+        {
+          "name": "ttfb",
+          "value": 10.433333337306976,
+          "unit": "ms",
+          "source": "performance",
+          "category": "good"
+        }
+      ]
+    },
+    {
+      "profile": "4g",
+      "tags": [
+        {
+          "name": "lcp",
+          "value": 1336,
+          "unit": "ms",
+          "source": "performance",
+          "category": "good"
+        },
+        {
+          "name": "cls",
+          "value": 0,
+          "unit": "unitless",
+          "source": "performance",
+          "category": "good"
+        },
+        {
+          "name": "fcp",
+          "value": 1336,
+          "unit": "ms",
+          "source": "performance",
+          "category": "good"
+        },
+        {
+          "name": "ttfb",
+          "value": 8.699999988079071,
+          "unit": "ms",
+          "source": "performance",
+          "category": "good"
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "jsErrorCount": 1,
+    "failedStaticResources": 1,
+    "firstScreenIssues": 0,
+    "styleMismatchRate": 0,
+    "styleMismatchCount": 0,
+    "styleDefinedCount": 175,
+    "styleMismatchClasses": [],
+    "styleAcceptable": true,
+    "performance": {
+      "unthrottled": {
+        "lcp": {
+          "value": 228,
+          "category": "good"
+        },
+        "cls": {
+          "value": 0,
+          "category": "good"
+        },
+        "fcp": {
+          "value": 228,
+          "category": "good"
+        },
+        "ttfb": {
+          "value": 10.433333337306976,
+          "category": "good"
+        }
+      },
+      "4g": {
+        "lcp": {
+          "value": 1336,
+          "category": "good"
+        },
+        "cls": {
+          "value": 0,
+          "category": "good"
+        },
+        "fcp": {
+          "value": 1336,
+          "category": "good"
+        },
+        "ttfb": {
+          "value": 8.699999988079071,
+          "category": "good"
+        }
+      }
+    },
+    "finalScore": 80
+  }
+}

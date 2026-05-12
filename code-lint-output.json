@@ -1,0 +1,28 @@
+{
+  "startedAt": 1773115000027,
+  "finishedAt": 1773115001095,
+  "totalFiles": 1,
+  "errorFiles": 1,
+  "emptyFiles": 0,
+  "score": 0,
+  "checkList": [
+    {
+      "file": "./src/App.tsx",
+      "type": "tsx",
+      "detail": [
+        {
+          "line": 211,
+          "column": 27,
+          "message": "'React' is not defined.",
+          "ruleId": "no-undef"
+        },
+        {
+          "line": 224,
+          "column": 27,
+          "message": "'React' is not defined.",
+          "ruleId": "no-undef"
+        }
+      ]
+    }
+  ]
+}

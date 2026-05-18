@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { AIAimAssistant } from './AIAim';
 
 // 游戏常量
 const GAME_WIDTH = 900;
@@ -107,6 +108,12 @@ export default function App() {
   const [camelFrame, setCamelFrame] = useState(0);
   const [backgroundOffset, setBackgroundOffset] = useState(0);
   const [showUpgradePanel, setShowUpgradePanel] = useState(false);
+  const [aimAssist, setAimAssist] = useState(false);
+  const [aiLoading, setAiLoading] = useState(false);
+  
+  const aiAimRef = useRef<AIAimAssistant | null>(null);
+  const enemiesRef = useRef<Enemy[]>([]);
+  enemiesRef.current = enemies;
   
   const lastShotRef = useRef(0);
   const idCounterRef = useRef(0);
@@ -191,21 +198,38 @@ export default function App() {
     
     const startX = PLAYER_X + 60;
     const startY = GROUND_Y - 80;
-    const dx = targetX - startX;
-    const dy = targetY - startY;
+    const bulletSpeed = 15;
+
+    let aimX = targetX;
+    let aimY = targetY;
+
+    if (aimAssist && aiAimRef.current?.isReady && enemiesRef.current.length > 0) {
+      const result = aiAimRef.current.predictBestTarget(
+        enemiesRef.current.map(e => ({ x: e.x, y: e.y, speed: e.speed })),
+        startX,
+        startY,
+        bulletSpeed
+      );
+      if (result) {
+        aimX = result.targetX;
+        aimY = result.targetY;
+      }
+    }
+
+    const dx = aimX - startX;
+    const dy = aimY - startY;
     const distance = Math.sqrt(dx * dx + dy * dy);
-    const speed = 15;
     
     const newBullet: Bullet = {
       id: idCounterRef.current++,
       x: startX,
       y: startY,
-      vx: (dx / distance) * speed,
-      vy: (dy / distance) * speed,
+      vx: (dx / distance) * bulletSpeed,
+      vy: (dy / distance) * bulletSpeed,
     };
     
     setBullets(prev => [...prev, newBullet]);
-  }, [upgrades.weaponFireRate]);
+  }, [upgrades.weaponFireRate, aimAssist]);
 
   // 处理点击
   const handleClick = (e: React.MouseEvent<HTMLDivElement>) => {
@@ -431,6 +455,24 @@ export default function App() {
     };
   }, [gameState.status, gameLoop]);
 
+  useEffect(() => {
+    const ai = new AIAimAssistant();
+    aiAimRef.current = ai;
+    return () => {
+      ai.dispose();
+      aiAimRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (aimAssist && aiAimRef.current && !aiAimRef.current.isReady && !aiAimRef.current.isLoading) {
+      setAiLoading(true);
+      aiAimRef.current.init().then(() => {
+        setAiLoading(false);
+      });
+    }
+  }, [aimAssist]);
+
   // 开始游戏
   const startGame = () => {
     setGameState({
@@ -571,6 +613,12 @@ export default function App() {
                 <span>🏆 {gameState.score}</span>
                 <span>⭐ {gameState.level}</span>
               </div>
+              {aimAssist && aiLoading && (
+                <div className="mt-1 text-yellow-300 text-xs animate-pulse">🤖 AI 加载中...</div>
+              )}
+              {aimAssist && !aiLoading && aiAimRef.current?.isReady && (
+                <div className="mt-1 text-green-300 text-xs">🤖 瞄准辅助已启用</div>
+              )}
             </div>
             
             <button 
@@ -711,6 +759,25 @@ export default function App() {
               >
                 ⚙️ 升级商店
               </button>
+
+              <div className="flex items-center gap-3 bg-amber-900/60 rounded-lg px-4 py-2">
+                <span className="text-amber-100 text-sm">🤖 瞄准辅助</span>
+                <button
+                  className={`relative w-12 h-6 rounded-full transition-colors ${
+                    aimAssist ? 'bg-green-500' : 'bg-gray-600'
+                  }`}
+                  onClick={() => setAimAssist(!aimAssist)}
+                >
+                  <div
+                    className={`absolute top-0.5 w-5 h-5 bg-white rounded-full transition-transform ${
+                      aimAssist ? 'translate-x-6' : 'translate-x-0.5'
+                    }`}
+                  />
+                </button>
+                {aimAssist && aiLoading && (
+                  <span className="text-yellow-300 text-xs animate-pulse">加载中</span>
+                )}
+              </div>
             </div>
             
             {/* 升级面板 */}

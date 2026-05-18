@@ -1,0 +1,117 @@
+diff --git a/index.html b/index.html
+index 0cdc4f1..975d16e 100644
+--- a/index.html
++++ b/index.html
+@@ -8,6 +8,7 @@
+   </head>
+   <body>
+     <div id="root"></div>
++    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.10.0/dist/tf.min.js"></script>
+     <script type="module" src="/src/main.tsx"></script>
+   </body>
+ </html>
+\ No newline at end of file
+diff --git a/src/App.tsx b/src/App.tsx
+index 22e120a..40b2ad5 100644
+--- a/src/App.tsx
++++ b/src/App.tsx
+@@ -1,4 +1,5 @@
+ import { useState, useEffect, useCallback, useRef } from 'react';
++import { initAimModel, predictAim } from './AIAim';
+ 
+ // 游戏常量
+ const GAME_WIDTH = 900;
+@@ -107,14 +108,20 @@ export default function App() {
+   const [camelFrame, setCamelFrame] = useState(0);
+   const [backgroundOffset, setBackgroundOffset] = useState(0);
+   const [showUpgradePanel, setShowUpgradePanel] = useState(false);
++  const [aimAssist, setAimAssist] = useState(false);
++  const [aimStatus, setAimStatus] = useState<string>('');
+   
+   const lastShotRef = useRef(0);
+   const idCounterRef = useRef(0);
+   const spawnTimerRef = useRef(0);
+   const collectibleTimerRef = useRef(0);
+   const gameStateRef = useRef(gameState);
++  const enemiesRef = useRef(enemies);
+   
+   gameStateRef.current = gameState;
++  useEffect(() => {
++    enemiesRef.current = enemies;
++  }, [enemies]);
+ 
+   const getDamage = () => 25 + upgrades.weaponDamage * 15;
+   const getFireRate = () => 400 - upgrades.weaponFireRate * 60;
+@@ -191,8 +198,37 @@ export default function App() {
+     
+     const startX = PLAYER_X + 60;
+     const startY = GROUND_Y - 80;
+-    const dx = targetX - startX;
+-    const dy = targetY - startY;
++
++    let finalTargetX = targetX;
++    let finalTargetY = targetY;
++
++    if (aimAssist) {
++      let bestEnemy: Enemy | null = null;
++      let minDistance = Infinity;
++      let bestPred = { x: targetX, y: targetY };
++      const bSpeed = 15;
++
++      enemiesRef.current.forEach(enemy => {
++        const targetEnemyY = enemy.y - 20; // 瞄准敌人的中心
++        const pred = predictAim(enemy.x, targetEnemyY, enemy.speed, startX, startY, bSpeed);
++        // 计算预测位置和点击位置的距离
++        const distToClick = Math.sqrt(Math.pow(pred.x - targetX, 2) + Math.pow(pred.y - targetY, 2));
++        if (distToClick < minDistance) {
++          minDistance = distToClick;
++          bestEnemy = enemy;
++          bestPred = pred;
++        }
++      });
++
++      // 如果有敌人，并且点击位置在合理的预测范围内（比如200像素），就自动瞄准该预测点
++      if (bestEnemy && minDistance < 200) {
++        finalTargetX = bestPred.x;
++        finalTargetY = bestPred.y;
++      }
++    }
++
++    const dx = finalTargetX - startX;
++    const dy = finalTargetY - startY;
+     const distance = Math.sqrt(dx * dx + dy * dy);
+     const speed = 15;
+     
+@@ -205,7 +241,7 @@ export default function App() {
+     };
+     
+     setBullets(prev => [...prev, newBullet]);
+-  }, [upgrades.weaponFireRate]);
++  }, [upgrades.weaponFireRate, aimAssist]);
+ 
+   // 处理点击
+   const handleClick = (e: React.MouseEvent<HTMLDivElement>) => {
+@@ -711,6 +747,23 @@ export default function App() {
+               >
+                 ⚙️ 升级商店
+               </button>
++
++              <button 
++                className={`${aimAssist ? 'bg-purple-600 hover:bg-purple-500' : 'bg-gray-600 hover:bg-gray-500'} text-white px-6 py-2 rounded-lg font-bold transition-all shadow-lg flex justify-between items-center gap-2`}
++                onClick={async () => {
++                  if (!aimAssist) {
++                    setAimAssist(true);
++                    await initAimModel((msg) => setAimStatus(msg));
++                    setAimStatus('AI 瞄准辅助已开启');
++                  } else {
++                    setAimAssist(false);
++                    setAimStatus('');
++                  }
++                }}
++              >
++                <span>🤖 AI 瞄准辅助 {aimAssist ? 'ON' : 'OFF'}</span>
++                {aimStatus && <span className="text-xs font-normal text-purple-200">{aimStatus}</span>}
++              </button>
+             </div>
+             
+             {/* 升级面板 */}

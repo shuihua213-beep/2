@@ -1,4 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { AIAim } from './AIAim';
+import type { EnemyInput } from './AIAim';
 
 // 游戏常量
 const GAME_WIDTH = 900;
@@ -107,14 +109,19 @@ export default function App() {
   const [camelFrame, setCamelFrame] = useState(0);
   const [backgroundOffset, setBackgroundOffset] = useState(0);
   const [showUpgradePanel, setShowUpgradePanel] = useState(false);
+  const [aimAssist, setAimAssist] = useState(false);
+  const [aiStatus, setAiStatus] = useState('AI 加载中...');
   
   const lastShotRef = useRef(0);
   const idCounterRef = useRef(0);
   const spawnTimerRef = useRef(0);
   const collectibleTimerRef = useRef(0);
   const gameStateRef = useRef(gameState);
+  const enemiesRef = useRef(enemies);
+  const aiAimRef = useRef<AIAim | null>(null);
   
   gameStateRef.current = gameState;
+  enemiesRef.current = enemies;
 
   const getDamage = () => 25 + upgrades.weaponDamage * 15;
   const getFireRate = () => 400 - upgrades.weaponFireRate * 60;
@@ -217,6 +224,22 @@ export default function App() {
     const x = (e.clientX - rect.left) * scaleX;
     const y = (e.clientY - rect.top) * scaleY;
     
+    if (aimAssist && aiAimRef.current?.isReady) {
+      const currentEnemies = enemiesRef.current;
+      if (currentEnemies.length > 0) {
+        const enemyInputs: EnemyInput[] = currentEnemies.map((en) => ({
+          x: en.x,
+          y: en.y,
+          speed: en.speed,
+        }));
+        const result = aiAimRef.current.getBestAim(enemyInputs, PLAYER_X, GROUND_Y);
+        if (result) {
+          shoot(result.targetX, result.targetY);
+          return;
+        }
+      }
+    }
+    
     shoot(x, y);
   };
 
@@ -231,6 +254,22 @@ export default function App() {
     const scaleY = GAME_HEIGHT / rect.height;
     const x = (touch.clientX - rect.left) * scaleX;
     const y = (touch.clientY - rect.top) * scaleY;
+    
+    if (aimAssist && aiAimRef.current?.isReady) {
+      const currentEnemies = enemiesRef.current;
+      if (currentEnemies.length > 0) {
+        const enemyInputs: EnemyInput[] = currentEnemies.map((en) => ({
+          x: en.x,
+          y: en.y,
+          speed: en.speed,
+        }));
+        const result = aiAimRef.current.getBestAim(enemyInputs, PLAYER_X, GROUND_Y);
+        if (result) {
+          shoot(result.targetX, result.targetY);
+          return;
+        }
+      }
+    }
     
     shoot(x, y);
   };
@@ -430,6 +469,17 @@ export default function App() {
       }
     };
   }, [gameState.status, gameLoop]);
+
+  useEffect(() => {
+    const ai = new AIAim();
+    aiAimRef.current = ai;
+    const unsub = ai.onStatusChange((status) => {
+      setAiStatus(status);
+    });
+    return () => {
+      unsub();
+    };
+  }, []);
 
   // 开始游戏
   const startGame = () => {
@@ -711,6 +761,30 @@ export default function App() {
               >
                 ⚙️ 升级商店
               </button>
+              
+              <div className="flex items-center justify-center gap-3 mt-2">
+                <span className="text-amber-200 text-sm">🎯 瞄准辅助</span>
+                <button
+                  className={`relative w-14 h-7 rounded-full transition-colors duration-300 ${
+                    aimAssist ? 'bg-green-500' : 'bg-gray-600'
+                  } ${!aiAimRef.current?.isReady && !aiAimRef.current?.isLoading ? 'opacity-50 cursor-not-allowed' : ''}`}
+                  onClick={() => {
+                    if (aiAimRef.current?.isReady || aiAimRef.current?.isLoading) {
+                      setAimAssist(!aimAssist);
+                    }
+                  }}
+                  disabled={!aiAimRef.current?.isReady && !aiAimRef.current?.isLoading}
+                >
+                  <span
+                    className={`absolute top-0.5 left-0.5 w-6 h-6 rounded-full bg-white shadow transition-transform duration-300 ${
+                      aimAssist ? 'translate-x-7' : ''
+                    }`}
+                  />
+                </button>
+                <span className={`text-xs ${aiAimRef.current?.isReady ? 'text-green-400' : 'text-yellow-400'}`}>
+                  {aiStatus}
+                </span>
+              </div>
             </div>
             
             {/* 升级面板 */}

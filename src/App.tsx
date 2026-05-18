@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { AIAim } from './AIAim';
 
 // 游戏常量
 const GAME_WIDTH = 900;
@@ -80,6 +81,7 @@ export default function App() {
   const gameRef = useRef<HTMLDivElement>(null);
   const animationRef = useRef<number>(0);
   const lastTimeRef = useRef<number>(0);
+  const aiAimRef = useRef<AIAim>(new AIAim());
   
   const [gameState, setGameState] = useState<GameState>({
     status: 'menu',
@@ -107,6 +109,8 @@ export default function App() {
   const [camelFrame, setCamelFrame] = useState(0);
   const [backgroundOffset, setBackgroundOffset] = useState(0);
   const [showUpgradePanel, setShowUpgradePanel] = useState(false);
+  const [aimAssistEnabled, setAimAssistEnabled] = useState(false);
+  const [aiLoading, setAiLoading] = useState(false);
   
   const lastShotRef = useRef(0);
   const idCounterRef = useRef(0);
@@ -191,8 +195,24 @@ export default function App() {
     
     const startX = PLAYER_X + 60;
     const startY = GROUND_Y - 80;
-    const dx = targetX - startX;
-    const dy = targetY - startY;
+    
+    let finalTargetX = targetX;
+    let finalTargetY = targetY;
+    
+    if (aimAssistEnabled && aiAimRef.current.getIsLoaded()) {
+      const bestTarget = aiAimRef.current.selectBestTarget(
+        enemies,
+        startX,
+        startY
+      );
+      if (bestTarget) {
+        finalTargetX = bestTarget.x;
+        finalTargetY = bestTarget.y;
+      }
+    }
+    
+    const dx = finalTargetX - startX;
+    const dy = finalTargetY - startY;
     const distance = Math.sqrt(dx * dx + dy * dy);
     const speed = 15;
     
@@ -205,7 +225,7 @@ export default function App() {
     };
     
     setBullets(prev => [...prev, newBullet]);
-  }, [upgrades.weaponFireRate]);
+  }, [upgrades.weaponFireRate, aimAssistEnabled, enemies]);
 
   // 处理点击
   const handleClick = (e: React.MouseEvent<HTMLDivElement>) => {
@@ -416,6 +436,18 @@ export default function App() {
     
     animationRef.current = requestAnimationFrame(gameLoop);
   }, [spawnEnemy, spawnCollectible, upgrades]);
+
+  // Load AI model when aim assist is enabled
+  useEffect(() => {
+    if (aimAssistEnabled && !aiAimRef.current.getIsLoaded() && !aiAimRef.current.getIsLoading()) {
+      const load = async () => {
+        setAiLoading(true);
+        await aiAimRef.current.loadModel();
+        setAiLoading(false);
+      };
+      load();
+    }
+  }, [aimAssistEnabled]);
 
   // 开始游戏循环
   useEffect(() => {
@@ -717,6 +749,23 @@ export default function App() {
             {showUpgradePanel && (
               <div className="mt-4 bg-amber-950/80 rounded-xl p-4 max-w-sm w-full mx-4">
                 <h3 className="text-amber-200 text-lg font-bold mb-3 text-center">升级你的装备</h3>
+                {/* Aim Assist Switch */}
+                <div className="flex items-center justify-between bg-amber-900/50 rounded-lg p-2 mb-3">
+                  <div className="text-amber-100 text-sm">
+                    <div>🎯 瞄准辅助</div>
+                    {aiLoading && <div className="text-xs text-yellow-300">AI 加载中...</div>}
+                  </div>
+                  <button
+                    className={`px-3 py-1 rounded text-sm font-bold transition-colors ${
+                      aimAssistEnabled 
+                        ? 'bg-green-500 hover:bg-green-400 text-white'
+                        : 'bg-gray-600 hover:bg-gray-500 text-white'
+                    }`}
+                    onClick={() => setAimAssistEnabled(!aimAssistEnabled)}
+                  >
+                    {aimAssistEnabled ? '开启' : '关闭'}
+                  </button>
+                </div>
                 <div className="grid gap-2">
                   {(Object.keys(UPGRADE_NAMES) as (keyof Upgrades)[]).map(key => {
                     const level = upgrades[key];

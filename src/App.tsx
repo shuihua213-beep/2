@@ -1,66 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-
-// 游戏常量
-const GAME_WIDTH = 900;
-const GAME_HEIGHT = 500;
-const PLAYER_X = 120;
-const GROUND_Y = 380;
-
-// 类型定义
-interface Enemy {
-  id: number;
-  x: number;
-  y: number;
-  health: number;
-  maxHealth: number;
-  type: 'horse' | 'motorcycle';
-  speed: number;
-  damage: number;
-}
-
-interface Collectible {
-  id: number;
-  x: number;
-  y: number;
-  type: 'coin' | 'artifact' | 'shield' | 'rapidFire' | 'magnet';
-}
-
-interface Bullet {
-  id: number;
-  x: number;
-  y: number;
-  vx: number;
-  vy: number;
-}
-
-interface Particle {
-  id: number;
-  x: number;
-  y: number;
-  vx: number;
-  vy: number;
-  life: number;
-  color: string;
-}
-
-interface GameState {
-  status: 'menu' | 'playing' | 'gameOver';
-  score: number;
-  coins: number;
-  artifacts: number;
-  totalCoins: number;
-  health: number;
-  maxHealth: number;
-  level: number;
-  distance: number;
-}
-
-interface Upgrades {
-  weaponDamage: number;
-  weaponFireRate: number;
-  camelHealth: number;
-  camelSpeed: number;
-}
+import { Enemy, Collectible, Bullet, Particle, GameState, Upgrades, GAME_WIDTH, GAME_HEIGHT, PLAYER_X } from './gameTypes';
 
 const UPGRADE_COSTS = {
   weaponDamage: [100, 250, 500, 1000, 2000],
@@ -79,7 +18,9 @@ const UPGRADE_NAMES: Record<keyof Upgrades, string> = {
 export default function App() {
   const gameRef = useRef<HTMLDivElement>(null);
   const animationRef = useRef<number>(0);
-  const lastTimeRef = useRef<number>(0);
+  
+  const workerRef = useRef<Worker | null>(null);
+  const isWorkerBusyRef = useRef(false);
   
   const [gameState, setGameState] = useState<GameState>({
     status: 'menu',
@@ -108,106 +49,51 @@ export default function App() {
   const [backgroundOffset, setBackgroundOffset] = useState(0);
   const [showUpgradePanel, setShowUpgradePanel] = useState(false);
   
-  const lastShotRef = useRef(0);
-  const idCounterRef = useRef(0);
-  const spawnTimerRef = useRef(0);
-  const collectibleTimerRef = useRef(0);
   const gameStateRef = useRef(gameState);
-  
   gameStateRef.current = gameState;
 
-  const getDamage = () => 25 + upgrades.weaponDamage * 15;
-  const getFireRate = () => 400 - upgrades.weaponFireRate * 60;
-  const getMaxHealth = () => 100 + upgrades.camelHealth * 25;
-  const getSpeed = () => 2 + upgrades.camelSpeed * 0.5;
-
-  // 创建粒子效果
-  const createParticles = (x: number, y: number, color: string, count: number) => {
-    const newParticles: Particle[] = [];
-    for (let i = 0; i < count; i++) {
-      newParticles.push({
-        id: idCounterRef.current++,
-        x,
-        y,
-        vx: (Math.random() - 0.5) * 8,
-        vy: (Math.random() - 0.5) * 8 - 2,
-        life: 30,
-        color,
-      });
-    }
-    setParticles(prev => [...prev, ...newParticles]);
-  };
-
-  // 生成敌人
-  const spawnEnemy = useCallback(() => {
-    const type = Math.random() > 0.6 ? 'motorcycle' : 'horse';
-    const level = gameStateRef.current.level;
+  useEffect(() => {
+    workerRef.current = new Worker(new URL('./gameWorker.ts', import.meta.url), { type: 'module' });
     
-    const baseHealth = type === 'motorcycle' ? 60 : 40;
-    const baseSpeed = type === 'motorcycle' ? 3.5 : 2.5;
-    const baseDamage = type === 'motorcycle' ? 20 : 15;
-    
-    const newEnemy: Enemy = {
-      id: idCounterRef.current++,
-      x: GAME_WIDTH + 50,
-      y: GROUND_Y - 20 - Math.random() * 40,
-      health: baseHealth + level * 10,
-      maxHealth: baseHealth + level * 10,
-      type,
-      speed: baseSpeed + level * 0.3,
-      damage: baseDamage + level * 3,
+    workerRef.current.onmessage = (e: MessageEvent) => {
+      const { type, payload } = e.data;
+      if (type === 'STATE_UPDATE') {
+        const { gameState: newGameState, enemies: newEnemies, collectibles: newCollectibles, bullets: newBullets, particles: newParticles, backgroundOffset: newBg, camelFrame: newFrame } = payload;
+        
+        setGameState(newGameState);
+        setEnemies(newEnemies);
+        setCollectibles(newCollectibles);
+        setBullets(newBullets);
+        setParticles(newParticles);
+        setBackgroundOffset(newBg);
+        setCamelFrame(newFrame);
+        
+        isWorkerBusyRef.current = false;
+      } else if (type === 'SYNC_BUSY_FALSE') {
+        isWorkerBusyRef.current = false;
+      }
     };
     
-    setEnemies(prev => [...prev, newEnemy]);
-  }, []);
-
-  // 生成收集物
-  const spawnCollectible = useCallback(() => {
-    const rand = Math.random();
-    let type: Collectible['type'];
-    if (rand < 0.7) type = 'coin';
-    else if (rand < 0.85) type = 'artifact';
-    else if (rand < 0.90) type = 'shield';
-    else if (rand < 0.95) type = 'rapidFire';
-    else type = 'magnet';
-
-    const newCollectible: Collectible = {
-      id: idCounterRef.current++,
-      x: GAME_WIDTH + 30,
-      y: GROUND_Y - 60 - Math.random() * 100,
-      type,
+    return () => {
+      if (workerRef.current) {
+        workerRef.current.terminate();
+      }
     };
-    
-    setCollectibles(prev => [...prev, newCollectible]);
   }, []);
 
-  // 射击
   const shoot = useCallback((targetX: number, targetY: number) => {
-    const now = Date.now();
-    if (now - lastShotRef.current < getFireRate()) return;
     if (gameStateRef.current.status !== 'playing') return;
     
-    lastShotRef.current = now;
-    
-    const startX = PLAYER_X + 60;
-    const startY = GROUND_Y - 80;
-    const dx = targetX - startX;
-    const dy = targetY - startY;
-    const distance = Math.sqrt(dx * dx + dy * dy);
-    const speed = 15;
-    
-    const newBullet: Bullet = {
-      id: idCounterRef.current++,
-      x: startX,
-      y: startY,
-      vx: (dx / distance) * speed,
-      vy: (dy / distance) * speed,
-    };
-    
-    setBullets(prev => [...prev, newBullet]);
-  }, [upgrades.weaponFireRate]);
+    workerRef.current?.postMessage({
+      type: 'SHOOT',
+      payload: {
+        targetX,
+        targetY,
+        timestamp: performance.now()
+      }
+    });
+  }, []);
 
-  // 处理点击
   const handleClick = (e: React.MouseEvent<HTMLDivElement>) => {
     if (gameStateRef.current.status !== 'playing') return;
     
@@ -220,7 +106,6 @@ export default function App() {
     shoot(x, y);
   };
 
-  // 处理触摸
   const handleTouch = (e: React.TouchEvent<HTMLDivElement>) => {
     if (gameStateRef.current.status !== 'playing') return;
     e.preventDefault();
@@ -235,192 +120,22 @@ export default function App() {
     shoot(x, y);
   };
 
-  // 游戏主循环
   const gameLoop = useCallback((timestamp: number) => {
     if (gameStateRef.current.status !== 'playing') return;
-    
-    const deltaTime = timestamp - lastTimeRef.current;
-    lastTimeRef.current = timestamp;
-    
-    const speed = getSpeed();
-    
-    // 更新背景
-    setBackgroundOffset(prev => (prev + speed) % 600);
-    setCamelFrame(prev => (prev + 0.15) % 4);
-    
-    // 更新距离和等级
-    setGameState(prev => {
-      const newDistance = prev.distance + speed * 0.1;
-      const newLevel = Math.min(5, Math.floor(newDistance / 500) + 1);
-      return { ...prev, distance: newDistance, level: newLevel };
-    });
-    
-    // 生成敌人
-    spawnTimerRef.current += deltaTime;
-    const spawnInterval = Math.max(1500 - gameStateRef.current.level * 200, 600);
-    if (spawnTimerRef.current > spawnInterval) {
-      spawnEnemy();
-      spawnTimerRef.current = 0;
-    }
-    
-    // 生成收集物
-    collectibleTimerRef.current += deltaTime;
-    if (collectibleTimerRef.current > 1200) {
-      spawnCollectible();
-      collectibleTimerRef.current = 0;
-    }
-    
-    // 更新子弹
-    setBullets(prev => prev
-      .map(b => ({ ...b, x: b.x + b.vx, y: b.y + b.vy }))
-      .filter(b => b.x < GAME_WIDTH + 50 && b.x > -50 && b.y > -50 && b.y < GAME_HEIGHT + 50)
-    );
-    
-    // 更新粒子
-    setParticles(prev => prev
-      .map(p => ({ ...p, x: p.x + p.vx, y: p.y + p.vy, vy: p.vy + 0.3, life: p.life - 1 }))
-      .filter(p => p.life > 0)
-    );
-    
-    // 更新敌人位置
-    setEnemies(prev => {
-      const updated: Enemy[] = [];
-      let damage = 0;
-      
-      prev.forEach(enemy => {
-        const newX = enemy.x - enemy.speed;
-        if (newX < -50) {
-          // 敌人逃脱，造成伤害
-          damage += enemy.damage;
-        } else {
-          updated.push({ ...enemy, x: newX });
-        }
+
+    if (!isWorkerBusyRef.current && workerRef.current) {
+      isWorkerBusyRef.current = true;
+      workerRef.current.postMessage({ 
+        type: 'TICK', 
+        payload: { timestamp } 
       });
-      
-      if (damage > 0) {
-        setGameState(prev => ({
-          ...prev,
-          health: Math.max(0, prev.health - damage),
-        }));
-      }
-      
-      return updated;
-    });
-    
-    // 更新收集物位置
-    setCollectibles(prev => prev
-      .map(c => ({ ...c, x: c.x - speed * 1.5 }))
-      .filter(c => c.x > -50)
-    );
-    
-    // 碰撞检测 - 子弹与敌人
-    const damage = getDamage();
-    setBullets(prevBullets => {
-      const remainingBullets: Bullet[] = [];
-      
-      setEnemies(prevEnemies => {
-        const remainingEnemies: Enemy[] = [];
-        const killedEnemyIds: number[] = [];
-        
-        prevEnemies.forEach(enemy => {
-          let enemyHealth = enemy.health;
-          let wasHit = false;
-          
-          prevBullets.forEach(bullet => {
-            if (killedEnemyIds.includes(enemy.id)) return;
-            const dx = bullet.x - enemy.x;
-            const dy = bullet.y - (enemy.y - 20);
-            if (Math.abs(dx) < 40 && Math.abs(dy) < 40) {
-              enemyHealth -= damage;
-              wasHit = true;
-              // 添加击中效果
-              createParticles(bullet.x, bullet.y, '#FFD700', 5);
-            }
-          });
-          
-          if (enemyHealth <= 0) {
-            // 敌人死亡
-            killedEnemyIds.push(enemy.id);
-            setGameState(prev => ({
-              ...prev,
-              score: prev.score + (enemy.type === 'motorcycle' ? 50 : 30),
-              coins: prev.coins + (enemy.type === 'motorcycle' ? 15 : 10),
-              totalCoins: prev.totalCoins + (enemy.type === 'motorcycle' ? 15 : 10),
-            }));
-            createParticles(enemy.x, enemy.y - 20, enemy.type === 'motorcycle' ? '#FF6B6B' : '#8B4513', 15);
-          } else if (wasHit) {
-            remainingEnemies.push({ ...enemy, health: enemyHealth });
-          } else {
-            remainingEnemies.push(enemy);
-          }
-        });
-        
-        // 过滤掉击中敌人的子弹
-        prevBullets.forEach(bullet => {
-          let hit = false;
-          prevEnemies.forEach(enemy => {
-            const dx = bullet.x - enemy.x;
-            const dy = bullet.y - (enemy.y - 20);
-            if (Math.abs(dx) < 40 && Math.abs(dy) < 40) {
-              hit = true;
-            }
-          });
-          if (!hit) remainingBullets.push(bullet);
-        });
-        
-        return remainingEnemies;
-      });
-      
-      return remainingBullets;
-    });
-    
-    // 碰撞检测 - 收集物
-    setCollectibles(prev => {
-      const remaining: Collectible[] = [];
-      
-      prev.forEach(c => {
-        const dx = c.x - PLAYER_X;
-        const dy = c.y - (GROUND_Y - 50);
-        if (Math.abs(dx) < 60 && Math.abs(dy) < 60) {
-          // 收集到物品
-          createParticles(c.x, c.y, c.type === 'coin' ? '#FFD700' : '#9333EA', 8);
-          
-          setGameState(prevState => {
-            switch (c.type) {
-              case 'coin':
-                return { ...prevState, coins: prevState.coins + 5, score: prevState.score + 5, totalCoins: prevState.totalCoins + 5 };
-              case 'artifact':
-                return { ...prevState, artifacts: prevState.artifacts + 1, score: prevState.score + 100 };
-              case 'shield':
-                return { ...prevState, health: Math.min(prevState.maxHealth, prevState.health + 30) };
-              case 'rapidFire':
-              case 'magnet':
-                return { ...prevState, score: prevState.score + 50 };
-              default:
-                return prevState;
-            }
-          });
-        } else {
-          remaining.push(c);
-        }
-      });
-      
-      return remaining;
-    });
-    
-    // 检查游戏结束
-    if (gameStateRef.current.health <= 0) {
-      setGameState(prev => ({ ...prev, status: 'gameOver' }));
-      return;
     }
     
     animationRef.current = requestAnimationFrame(gameLoop);
-  }, [spawnEnemy, spawnCollectible, upgrades]);
+  }, []);
 
-  // 开始游戏循环
   useEffect(() => {
     if (gameState.status === 'playing') {
-      lastTimeRef.current = performance.now();
       animationRef.current = requestAnimationFrame(gameLoop);
     }
     
@@ -431,30 +146,20 @@ export default function App() {
     };
   }, [gameState.status, gameLoop]);
 
-  // 开始游戏
   const startGame = () => {
-    setGameState({
-      status: 'playing',
-      score: 0,
-      coins: gameState.coins,
-      artifacts: 0,
-      totalCoins: gameState.coins,
-      health: getMaxHealth(),
-      maxHealth: getMaxHealth(),
-      level: 1,
-      distance: 0,
+    workerRef.current?.postMessage({
+      type: 'START_GAME',
+      payload: {
+        upgrades,
+        coins: gameState.coins,
+        timestamp: performance.now()
+      }
     });
-    setEnemies([]);
-    setCollectibles([]);
-    setBullets([]);
-    setParticles([]);
-    spawnTimerRef.current = 0;
-    collectibleTimerRef.current = 0;
   };
 
-  // 返回主菜单
   const goToMenu = () => {
-    setGameState(prev => ({
+    workerRef.current?.postMessage({ type: 'STOP_GAME' });
+    setGameState((prev: GameState) => ({
       ...prev,
       status: 'menu',
       coins: prev.totalCoins,
@@ -462,7 +167,6 @@ export default function App() {
     setShowUpgradePanel(false);
   };
 
-  // 升级
   const buyUpgrade = (type: keyof Upgrades) => {
     const level = upgrades[type];
     if (level >= 5) return;
@@ -470,13 +174,13 @@ export default function App() {
     const cost = UPGRADE_COSTS[type][level];
     if (gameState.coins < cost) return;
     
-    setGameState(prev => ({
+    setGameState((prev: GameState) => ({
       ...prev,
       coins: prev.coins - cost,
       totalCoins: prev.totalCoins - cost,
     }));
     
-    setUpgrades(prev => ({
+    setUpgrades((prev: Upgrades) => ({
       ...prev,
       [type]: prev[type] + 1,
     }));
@@ -488,7 +192,6 @@ export default function App() {
         🏜️ 沙丘游侠：宝藏猎手 🐪
       </h1>
       
-      {/* 游戏画面 */}
       <div 
         ref={gameRef}
         className="relative w-full max-w-4xl h-64 md:h-80 lg:h-96 bg-gradient-to-b from-sky-400 via-sky-300 to-amber-200 rounded-xl overflow-hidden shadow-2xl border-4 border-amber-700 cursor-crosshair select-none"
@@ -496,12 +199,9 @@ export default function App() {
         onTouchStart={handleTouch}
         style={{ aspectRatio: '16/9', maxHeight: '500px' }}
       >
-        {/* 背景层 */}
         <div className="absolute inset-0 overflow-hidden">
-          {/* 太阳 */}
           <div className="absolute top-4 right-8 w-12 h-12 md:w-16 md:h-16 bg-yellow-300 rounded-full shadow-lg animate-pulse" />
           
-          {/* 云朵 */}
           <div 
             className="absolute top-8 text-4xl md:text-6xl opacity-80 transition-transform"
             style={{ transform: `translateX(${-backgroundOffset * 0.2 % 400}px)` }}
@@ -509,19 +209,16 @@ export default function App() {
             ☁️ ☁️ ☁️
           </div>
           
-          {/* 远处的山丘 */}
           <div className="absolute bottom-20 left-0 right-0">
             <svg viewBox="0 0 900 100" className="w-full h-16 md:h-24 opacity-60">
               <path d="M0,100 Q150,20 300,80 T600,60 T900,100 L900,100 L0,100 Z" fill="#D2691E" />
             </svg>
           </div>
           
-          {/* 沙丘背景 */}
           <div 
             className="absolute bottom-0 left-0 right-0 h-32 md:h-40 bg-gradient-to-t from-amber-600 via-amber-500 to-transparent"
           />
           
-          {/* 滚动的地面纹理 */}
           <div 
             className="absolute bottom-0 left-0 right-0 h-20 flex items-end transition-transform"
             style={{ transform: `translateX(${-backgroundOffset % 100}px)` }}
@@ -531,7 +228,6 @@ export default function App() {
             ))}
           </div>
           
-          {/* 仙人掌 */}
           <div 
             className="absolute bottom-16 text-3xl md:text-5xl transition-transform"
             style={{ transform: `translateX(${200 - backgroundOffset * 0.5 % 500}px)` }}
@@ -552,7 +248,6 @@ export default function App() {
           </div>
         </div>
         
-        {/* 游戏中UI */}
         {gameState.status === 'playing' && (
           <div className="absolute top-2 left-2 right-2 flex justify-between items-start pointer-events-none">
             <div className="bg-black/50 rounded-lg p-2 md:p-3 text-white text-xs md:text-sm backdrop-blur-sm">
@@ -564,7 +259,7 @@ export default function App() {
                     style={{ width: `${(gameState.health / gameState.maxHealth) * 100}%` }}
                   />
                 </div>
-                <span className="text-xs">{gameState.health}/{gameState.maxHealth}</span>
+                <span className="text-xs">{Math.floor(gameState.health)}/{gameState.maxHealth}</span>
               </div>
               <div className="flex gap-2 md:gap-4">
                 <span>💰 {gameState.coins}</span>
@@ -585,7 +280,6 @@ export default function App() {
           </div>
         )}
         
-        {/* 玩家骆驼 */}
         {gameState.status === 'playing' && (
           <div 
             className="absolute transition-all duration-75"
@@ -597,11 +291,9 @@ export default function App() {
           >
             <div className="text-5xl md:text-7xl relative">
               🐪
-              {/* 骑手 */}
               <div className="absolute -top-6 left-1/2 -translate-x-1/2 text-2xl md:text-3xl">
                 🤠
               </div>
-              {/* 枪 */}
               <div className="absolute top-4 right-0 text-xl md:text-2xl transform -rotate-12">
                 🔫
               </div>
@@ -609,14 +301,12 @@ export default function App() {
           </div>
         )}
         
-        {/* 敌人 */}
         {enemies.map(enemy => (
           <div 
             key={enemy.id} 
             className="absolute"
             style={{ left: enemy.x, top: enemy.y - 40 }}
           >
-            {/* 血条 */}
             <div className="absolute -top-3 left-1/2 -translate-x-1/2 w-10 h-1.5 bg-gray-800 rounded-full overflow-hidden">
               <div 
                 className="h-full bg-red-500 transition-all duration-150"
@@ -639,7 +329,6 @@ export default function App() {
           </div>
         ))}
         
-        {/* 收集物 */}
         {collectibles.map(c => (
           <div 
             key={c.id} 
@@ -656,7 +345,6 @@ export default function App() {
           </div>
         ))}
         
-        {/* 子弹 */}
         {bullets.map(b => (
           <div 
             key={b.id} 
@@ -669,7 +357,6 @@ export default function App() {
           />
         ))}
         
-        {/* 粒子效果 */}
         {particles.map(p => (
           <div 
             key={p.id} 
@@ -683,7 +370,6 @@ export default function App() {
           />
         ))}
         
-        {/* 主菜单 */}
         {gameState.status === 'menu' && (
           <div className="absolute inset-0 bg-gradient-to-b from-amber-800/90 to-amber-900/90 flex flex-col items-center justify-center z-20 backdrop-blur-sm">
             <div className="text-5xl md:text-6xl mb-4 animate-bounce">🏜️</div>
@@ -713,7 +399,6 @@ export default function App() {
               </button>
             </div>
             
-            {/* 升级面板 */}
             {showUpgradePanel && (
               <div className="mt-4 bg-amber-950/80 rounded-xl p-4 max-w-sm w-full mx-4">
                 <h3 className="text-amber-200 text-lg font-bold mb-3 text-center">升级你的装备</h3>
@@ -763,7 +448,6 @@ export default function App() {
           </div>
         )}
         
-        {/* 游戏结束 */}
         {gameState.status === 'gameOver' && (
           <div className="absolute inset-0 bg-black/80 flex flex-col items-center justify-center z-20 backdrop-blur-sm">
             <div className="text-5xl md:text-6xl mb-4">💀</div>
@@ -793,7 +477,6 @@ export default function App() {
         )}
       </div>
       
-      {/* 底部说明 */}
       <div className="mt-4 text-amber-900 text-xs md:text-sm text-center max-w-lg">
         <p>🎯 点击屏幕射击土匪 | 🪙 收集金币升级装备 | 💎 收集神器碎片</p>
         <p className="mt-1">🛡️ 护盾恢复生命 | ⚡ 快速射击 | 🧲 磁吸金币</p>

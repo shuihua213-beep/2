@@ -1,0 +1,173 @@
+diff --git a/package.json b/package.json
+index 4cd2d7f..54802e4 100644
+--- a/package.json
++++ b/package.json
+@@ -12,7 +12,9 @@
+     "@aidp/web-code-check": "^1.1.10",
+     "playwright": "^1.58.2",
+     "react": "18.2.0",
+-    "react-dom": "18.2.0"
++    "react-dom": "18.2.0",
++    "y-webrtc": "^10.3.0",
++    "yjs": "^13.6.0"
+   },
+   "devDependencies": {
+     "@types/react": "^18.2.15",
+diff --git a/src/App.tsx b/src/App.tsx
+index 22e120a..326b2ea 100644
+--- a/src/App.tsx
++++ b/src/App.tsx
+@@ -1,4 +1,6 @@
+ import { useState, useEffect, useCallback, useRef } from 'react';
++import { createYjsSyncProvider } from './YjsSyncProvider';
++import { YjsBinding, RemoteCursor } from './YjsBinding';
+ 
+ // 游戏常量
+ const GAME_WIDTH = 900;
+@@ -107,6 +109,11 @@ export default function App() {
+   const [camelFrame, setCamelFrame] = useState(0);
+   const [backgroundOffset, setBackgroundOffset] = useState(0);
+   const [showUpgradePanel, setShowUpgradePanel] = useState(false);
++  const [remoteCursors, setRemoteCursors] = useState<RemoteCursor[]>([]);
++  const [syncStatus, setSyncStatus] = useState<'connecting' | 'connected' | 'disconnected'>('connecting');
++  
++  const yjsBindingRef = useRef<YjsBinding | null>(null);
++  const isYjsInitializedRef = useRef(false);
+   
+   const lastShotRef = useRef(0);
+   const idCounterRef = useRef(0);
+@@ -431,6 +438,56 @@ export default function App() {
+     };
+   }, [gameState.status, gameLoop]);
+ 
++  // 初始化 Yjs 同步
++  useEffect(() => {
++    if (isYjsInitializedRef.current) return;
++    isYjsInitializedRef.current = true;
++
++    const provider = createYjsSyncProvider();
++    const binding = new YjsBinding(provider);
++    yjsBindingRef.current = binding;
++
++    provider.webrtcProvider.on('peers', () => {
++      setSyncStatus('connected');
++    });
++
++    provider.webrtcProvider.on('connection-close', () => {
++      setSyncStatus('disconnected');
++    });
++
++    const syncState = binding.getSyncState();
++    if (syncState.coins > 0 || syncState.totalCoins > 0) {
++      setGameState(prev => ({
++        ...prev,
++        coins: syncState.coins,
++        totalCoins: syncState.totalCoins,
++        score: syncState.score,
++        artifacts: syncState.artifacts,
++      }));
++      setUpgrades(syncState.upgrades);
++    }
++
++    binding.onChange((syncState) => {
++      setGameState(prev => ({
++        ...prev,
++        coins: syncState.coins,
++        totalCoins: syncState.totalCoins,
++        score: syncState.score,
++        artifacts: syncState.artifacts,
++      }));
++      setUpgrades(syncState.upgrades);
++    });
++
++    binding.onCursorChange((cursors) => {
++      setRemoteCursors(cursors);
++    });
++
++    return () => {
++      binding.destroy();
++      provider.destroy();
++    };
++  }, []);
++
+   // 开始游戏
+   const startGame = () => {
+     setGameState({
+@@ -480,13 +537,28 @@ export default function App() {
+       ...prev,
+       [type]: prev[type] + 1,
+     }));
++
++    if (yjsBindingRef.current) {
++      yjsBindingRef.current.updateCoins(gameState.coins - cost, gameState.totalCoins - cost);
++      yjsBindingRef.current.upgradeSkill(type, level + 1);
++    }
+   };
+ 
+   return (
+     <div className="min-h-screen bg-gradient-to-b from-amber-200 via-orange-300 to-amber-500 flex flex-col items-center justify-center p-4">
+-      <h1 className="text-2xl md:text-4xl font-bold text-amber-900 mb-4 drop-shadow-lg text-center">
+-        🏜️ 沙丘游侠：宝藏猎手 🐪
+-      </h1>
++      <div className="flex items-center gap-3 mb-4">
++        <h1 className="text-2xl md:text-4xl font-bold text-amber-900 drop-shadow-lg text-center">
++          🏜️ 沙丘游侠：宝藏猎手 🐪
++        </h1>
++        <div className={`px-2 py-1 rounded text-xs font-bold ${
++          syncStatus === 'connected' ? 'bg-green-500 text-white' : 
++          syncStatus === 'connecting' ? 'bg-yellow-500 text-white' : 
++          'bg-red-500 text-white'
++        }`}>
++          {syncStatus === 'connected' ? '🟢 已同步' : 
++           syncStatus === 'connecting' ? '🟡 连接中' : '🔴 未连接'}
++        </div>
++      </div>
+       
+       {/* 游戏画面 */}
+       <div 
+@@ -715,7 +787,7 @@ export default function App() {
+             
+             {/* 升级面板 */}
+             {showUpgradePanel && (
+-              <div className="mt-4 bg-amber-950/80 rounded-xl p-4 max-w-sm w-full mx-4">
++              <div className="mt-4 bg-amber-950/80 rounded-xl p-4 max-w-sm w-full mx-4 relative">
+                 <h3 className="text-amber-200 text-lg font-bold mb-3 text-center">升级你的装备</h3>
+                 <div className="grid gap-2">
+                   {(Object.keys(UPGRADE_NAMES) as (keyof Upgrades)[]).map(key => {
+@@ -723,9 +795,15 @@ export default function App() {
+                     const canUpgrade = level < 5;
+                     const cost = canUpgrade ? UPGRADE_COSTS[key][level] : 0;
+                     const canAfford = gameState.coins >= cost;
++                    const cursorsOnThis = remoteCursors.filter(c => c.skillType === key);
+                     
+                     return (
+-                      <div key={key} className="flex items-center justify-between bg-amber-900/50 rounded-lg p-2">
++                      <div 
++                        key={key} 
++                        className="flex items-center justify-between bg-amber-900/50 rounded-lg p-2 relative"
++                        onMouseEnter={() => yjsBindingRef.current?.setCursor(key)}
++                        onMouseLeave={() => yjsBindingRef.current?.setCursor(null)}
++                      >
+                         <div className="text-amber-100 text-sm">
+                           <div>{UPGRADE_NAMES[key]}</div>
+                           <div className="flex gap-1">
+@@ -750,6 +828,19 @@ export default function App() {
+                         >
+                           {canUpgrade ? `${cost} 💰` : '已满'}
+                         </button>
++                        {cursorsOnThis.length > 0 && (
++                          <div className="absolute -right-2 -top-2 flex gap-1">
++                            {cursorsOnThis.map((cursor, idx) => (
++                              <div 
++                                key={`${cursor.userId}-${idx}`}
++                                className="w-5 h-5 rounded-full bg-blue-500 text-white text-xs flex items-center justify-center animate-pulse shadow-lg"
++                                title={`${cursor.userId} 正在查看`}
++                              >
++                                👤
++                              </div>
++                            ))}
++                          </div>
++                        )}
+                       </div>
+                     );
+                   })}

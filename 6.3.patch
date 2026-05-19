@@ -1,0 +1,255 @@
+diff --git a/src/App.tsx b/src/App.tsx
+index 22e120a..4e8557f 100644
+--- a/src/App.tsx
++++ b/src/App.tsx
+@@ -1,4 +1,15 @@
+ import { useState, useEffect, useCallback, useRef } from 'react';
++import {
++  login,
++  logout,
++  getCurrentUser,
++  uploadData,
++  downloadData,
++  mergeData,
++  exportDataJSON,
++  importDataJSON,
++  type SyncData,
++} from './CloudSync';
+ 
+ // 游戏常量
+ const GAME_WIDTH = 900;
+@@ -107,6 +118,8 @@ export default function App() {
+   const [camelFrame, setCamelFrame] = useState(0);
+   const [backgroundOffset, setBackgroundOffset] = useState(0);
+   const [showUpgradePanel, setShowUpgradePanel] = useState(false);
++  const [currentUser, setCurrentUser] = useState<string | null>(() => getCurrentUser());
++  const [syncMessage, setSyncMessage] = useState<string>('');
+   
+   const lastShotRef = useRef(0);
+   const idCounterRef = useRef(0);
+@@ -482,6 +495,152 @@ export default function App() {
+     }));
+   };
+ 
++  const showMessage = (msg: string) => {
++    setSyncMessage(msg);
++    setTimeout(() => setSyncMessage(''), 3000);
++  };
++
++  const handleLogin = () => {
++    const userId = login();
++    if (userId) {
++      setCurrentUser(userId);
++      showMessage(`已登录: ${userId}`);
++    }
++  };
++
++  const handleLogout = () => {
++    logout();
++    setCurrentUser(null);
++    showMessage('已登出');
++  };
++
++  const handleUpload = () => {
++    if (!currentUser) {
++      showMessage('请先登录');
++      return;
++    }
++
++    const ok = uploadData({
++      upgrades: upgrades as Record<string, number>,
++      coins: gameState.coins,
++      totalCoins: gameState.totalCoins,
++      artifacts: gameState.artifacts,
++    });
++
++    showMessage(ok ? '数据已上传到云端' : '上传失败');
++  };
++
++  const handleSync = () => {
++    if (!currentUser) {
++      showMessage('请先登录');
++      return;
++    }
++
++    const remote = downloadData();
++    if (!remote) {
++      showMessage('云端暂无数据，请先上传');
++      return;
++    }
++
++    const localData: SyncData = {
++      userId: currentUser,
++      timestamp: Date.now(),
++      upgrades: upgrades as Record<string, number>,
++      coins: gameState.coins,
++      totalCoins: gameState.totalCoins,
++      artifacts: gameState.artifacts,
++    };
++
++    const merged = mergeData(localData, remote);
++
++    setUpgrades(prev => {
++      const next = { ...prev };
++      for (const key of Object.keys(merged.upgrades)) {
++        if (key in next) {
++          (next as Record<string, number>)[key] = merged.upgrades[key];
++        }
++      }
++      return next;
++    });
++
++    setGameState(prev => ({
++      ...prev,
++      coins: merged.coins,
++      totalCoins: merged.totalCoins,
++      artifacts: merged.artifacts,
++    }));
++
++    uploadData({
++      upgrades: merged.upgrades,
++      coins: merged.coins,
++      totalCoins: merged.totalCoins,
++      artifacts: merged.artifacts,
++    });
++
++    showMessage('同步完成，已保留最高等级');
++  };
++
++  const handleExport = () => {
++    if (!currentUser) {
++      showMessage('请先登录');
++      return;
++    }
++
++    const json = exportDataJSON();
++    if (!json) {
++      showMessage('没有可导出的数据');
++      return;
++    }
++
++    navigator.clipboard.writeText(json).then(
++      () => showMessage('数据已复制到剪贴板，可在其他设备导入'),
++      () => {
++        const textarea = document.createElement('textarea');
++        textarea.value = json;
++        document.body.appendChild(textarea);
++        textarea.select();
++        document.execCommand('copy');
++        document.body.removeChild(textarea);
++        showMessage('数据已复制到剪贴板，可在其他设备导入');
++      }
++    );
++  };
++
++  const handleImport = () => {
++    if (!currentUser) {
++      showMessage('请先登录');
++      return;
++    }
++
++    const jsonStr = window.prompt('请粘贴从其他设备导出的 JSON 数据：');
++    if (!jsonStr || !jsonStr.trim()) return;
++
++    const result = importDataJSON(jsonStr.trim());
++    if (!result) {
++      showMessage('导入失败，JSON 数据格式错误');
++      return;
++    }
++
++    setUpgrades(prev => {
++      const next = { ...prev };
++      for (const key of Object.keys(result.upgrades)) {
++        if (key in next) {
++          (next as Record<string, number>)[key] = result.upgrades[key];
++        }
++      }
++      return next;
++    });
++
++    setGameState(prev => ({
++      ...prev,
++      coins: result.coins,
++      totalCoins: result.totalCoins,
++      artifacts: result.artifacts,
++    }));
++
++    showMessage('导入成功，数据已合并（保留最高等级）');
++  };
++
+   return (
+     <div className="min-h-screen bg-gradient-to-b from-amber-200 via-orange-300 to-amber-500 flex flex-col items-center justify-center p-4">
+       <h1 className="text-2xl md:text-4xl font-bold text-amber-900 mb-4 drop-shadow-lg text-center">
+@@ -757,6 +916,72 @@ export default function App() {
+               </div>
+             )}
+             
++            {/* 云端同步面板 */}
++            <div className="mt-4 bg-amber-950/80 rounded-xl p-4 max-w-sm w-full mx-4">
++              <h3 className="text-amber-200 text-lg font-bold mb-3 text-center">☁️ 云端同步</h3>
++
++              {!currentUser ? (
++                <button
++                  className="w-full bg-blue-500 hover:bg-blue-400 text-white px-4 py-2 rounded-lg font-bold transition-all hover:scale-105 shadow-lg mb-3"
++                  onClick={handleLogin}
++                >
++                  🔑 登录
++                </button>
++              ) : (
++                <div className="mb-3 text-center">
++                  <span className="text-blue-300 text-sm">当前用户: </span>
++                  <span className="text-white font-bold">{currentUser}</span>
++                  <button
++                    className="ml-2 text-red-400 hover:text-red-300 text-xs underline"
++                    onClick={handleLogout}
++                  >
++                    登出
++                  </button>
++                </div>
++              )}
++
++              <div className="grid grid-cols-2 gap-2">
++                <button
++                  className="bg-green-600 hover:bg-green-500 text-white px-3 py-2 rounded-lg text-sm font-bold transition-all hover:scale-105 shadow-lg disabled:opacity-50 disabled:cursor-not-allowed"
++                  onClick={handleUpload}
++                  disabled={!currentUser}
++                >
++                  📤 上传
++                </button>
++                <button
++                  className="bg-purple-600 hover:bg-purple-500 text-white px-3 py-2 rounded-lg text-sm font-bold transition-all hover:scale-105 shadow-lg disabled:opacity-50 disabled:cursor-not-allowed"
++                  onClick={handleSync}
++                  disabled={!currentUser}
++                >
++                  📥 同步
++                </button>
++              </div>
++
++              <p className="text-amber-400 text-xs text-center mt-3 mb-2">跨设备模拟 (导出/导入 JSON)</p>
++              <div className="grid grid-cols-2 gap-2">
++                <button
++                  className="bg-teal-600 hover:bg-teal-500 text-white px-3 py-2 rounded-lg text-sm font-bold transition-all hover:scale-105 shadow-lg disabled:opacity-50 disabled:cursor-not-allowed"
++                  onClick={handleExport}
++                  disabled={!currentUser}
++                >
++                  📋 导出
++                </button>
++                <button
++                  className="bg-orange-600 hover:bg-orange-500 text-white px-3 py-2 rounded-lg text-sm font-bold transition-all hover:scale-105 shadow-lg disabled:opacity-50 disabled:cursor-not-allowed"
++                  onClick={handleImport}
++                  disabled={!currentUser}
++                >
++                  📨 导入
++                </button>
++              </div>
++
++              {syncMessage && (
++                <div className="mt-3 bg-green-900/80 text-green-200 text-xs text-center py-2 px-3 rounded-lg animate-pulse">
++                  {syncMessage}
++                </div>
++              )}
++            </div>
++
+             <div className="mt-4 text-amber-300 text-xs md:text-sm text-center px-4">
+               💡 点击屏幕射击土匪 | 收集金币和道具
+             </div>

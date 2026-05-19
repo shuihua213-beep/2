@@ -1,12 +1,12 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { useUndoRedo } from './useUndoRedo';
+import { GameState, Upgrades } from './historyReducer';
 
-// 游戏常量
 const GAME_WIDTH = 900;
 const GAME_HEIGHT = 500;
 const PLAYER_X = 120;
 const GROUND_Y = 380;
 
-// 类型定义
 interface Enemy {
   id: number;
   x: number;
@@ -43,25 +43,6 @@ interface Particle {
   color: string;
 }
 
-interface GameState {
-  status: 'menu' | 'playing' | 'gameOver';
-  score: number;
-  coins: number;
-  artifacts: number;
-  totalCoins: number;
-  health: number;
-  maxHealth: number;
-  level: number;
-  distance: number;
-}
-
-interface Upgrades {
-  weaponDamage: number;
-  weaponFireRate: number;
-  camelHealth: number;
-  camelSpeed: number;
-}
-
 const UPGRADE_COSTS = {
   weaponDamage: [100, 250, 500, 1000, 2000],
   weaponFireRate: [150, 300, 600, 1200, 2500],
@@ -80,24 +61,35 @@ export default function App() {
   const gameRef = useRef<HTMLDivElement>(null);
   const animationRef = useRef<number>(0);
   const lastTimeRef = useRef<number>(0);
-  
-  const [gameState, setGameState] = useState<GameState>({
-    status: 'menu',
-    score: 0,
-    coins: 0,
-    artifacts: 0,
-    totalCoins: 0,
-    health: 100,
-    maxHealth: 100,
-    level: 1,
-    distance: 0,
-  });
 
-  const [upgrades, setUpgrades] = useState<Upgrades>({
-    weaponDamage: 0,
-    weaponFireRate: 0,
-    camelHealth: 0,
-    camelSpeed: 0,
+  const {
+    gameState,
+    upgrades,
+    setGameState,
+    setUpgrades,
+    undo,
+    redo,
+    canUndo,
+    canRedo,
+    batch,
+  } = useUndoRedo({
+    gameState: {
+      status: 'menu',
+      score: 0,
+      coins: 0,
+      artifacts: 0,
+      totalCoins: 0,
+      health: 100,
+      maxHealth: 100,
+      level: 1,
+      distance: 0,
+    },
+    upgrades: {
+      weaponDamage: 0,
+      weaponFireRate: 0,
+      camelHealth: 0,
+      camelSpeed: 0,
+    },
   });
 
   const [enemies, setEnemies] = useState<Enemy[]>([]);
@@ -107,13 +99,13 @@ export default function App() {
   const [camelFrame, setCamelFrame] = useState(0);
   const [backgroundOffset, setBackgroundOffset] = useState(0);
   const [showUpgradePanel, setShowUpgradePanel] = useState(false);
-  
+
   const lastShotRef = useRef(0);
   const idCounterRef = useRef(0);
   const spawnTimerRef = useRef(0);
   const collectibleTimerRef = useRef(0);
   const gameStateRef = useRef(gameState);
-  
+
   gameStateRef.current = gameState;
 
   const getDamage = () => 25 + upgrades.weaponDamage * 15;
@@ -238,22 +230,21 @@ export default function App() {
   // 游戏主循环
   const gameLoop = useCallback((timestamp: number) => {
     if (gameStateRef.current.status !== 'playing') return;
-    
+
     const deltaTime = timestamp - lastTimeRef.current;
     lastTimeRef.current = timestamp;
-    
+
     const speed = getSpeed();
-    
-    // 更新背景
+
     setBackgroundOffset(prev => (prev + speed) % 600);
     setCamelFrame(prev => (prev + 0.15) % 4);
-    
-    // 更新距离和等级
-    setGameState(prev => {
-      const newDistance = prev.distance + speed * 0.1;
-      const newLevel = Math.min(5, Math.floor(newDistance / 500) + 1);
-      return { ...prev, distance: newDistance, level: newLevel };
-    });
+
+    batch(() => {
+      setGameState(prev => {
+        const newDistance = prev.distance + speed * 0.1;
+        const newLevel = Math.min(5, Math.floor(newDistance / 500) + 1);
+        return { ...prev, distance: newDistance, level: newLevel };
+      });
     
     // 生成敌人
     spawnTimerRef.current += deltaTime;
@@ -407,15 +398,16 @@ export default function App() {
       
       return remaining;
     });
-    
-    // 检查游戏结束
+
     if (gameStateRef.current.health <= 0) {
       setGameState(prev => ({ ...prev, status: 'gameOver' }));
-      return;
     }
-    
+    });
+
+    if (gameStateRef.current.health <= 0) return;
+
     animationRef.current = requestAnimationFrame(gameLoop);
-  }, [spawnEnemy, spawnCollectible, upgrades]);
+  }, [spawnEnemy, spawnCollectible, upgrades, batch]);
 
   // 开始游戏循环
   useEffect(() => {
@@ -466,20 +458,22 @@ export default function App() {
   const buyUpgrade = (type: keyof Upgrades) => {
     const level = upgrades[type];
     if (level >= 5) return;
-    
+
     const cost = UPGRADE_COSTS[type][level];
     if (gameState.coins < cost) return;
-    
-    setGameState(prev => ({
-      ...prev,
-      coins: prev.coins - cost,
-      totalCoins: prev.totalCoins - cost,
-    }));
-    
-    setUpgrades(prev => ({
-      ...prev,
-      [type]: prev[type] + 1,
-    }));
+
+    batch(() => {
+      setGameState(prev => ({
+        ...prev,
+        coins: prev.coins - cost,
+        totalCoins: prev.totalCoins - cost,
+      }));
+
+      setUpgrades(prev => ({
+        ...prev,
+        [type]: prev[type] + 1,
+      }));
+    });
   };
 
   return (
@@ -791,12 +785,38 @@ export default function App() {
             </div>
           </div>
         )}
+
+        <div className="absolute bottom-2 right-2 flex gap-1 z-30">
+          <button
+            className={`px-2 py-1 rounded text-xs font-bold transition-all ${
+              canUndo
+                ? 'bg-blue-500 hover:bg-blue-400 text-white shadow-lg'
+                : 'bg-gray-600 text-gray-400 cursor-not-allowed'
+            }`}
+            onClick={(e) => { e.stopPropagation(); undo(); }}
+            disabled={!canUndo}
+            title="撤销 (Ctrl+Z)"
+          >
+            ↩️ 撤销
+          </button>
+          <button
+            className={`px-2 py-1 rounded text-xs font-bold transition-all ${
+              canRedo
+                ? 'bg-blue-500 hover:bg-blue-400 text-white shadow-lg'
+                : 'bg-gray-600 text-gray-400 cursor-not-allowed'
+            }`}
+            onClick={(e) => { e.stopPropagation(); redo(); }}
+            disabled={!canRedo}
+            title="重做 (Ctrl+Y)"
+          >
+            ↪️ 重做
+          </button>
+        </div>
       </div>
-      
-      {/* 底部说明 */}
+
       <div className="mt-4 text-amber-900 text-xs md:text-sm text-center max-w-lg">
         <p>🎯 点击屏幕射击土匪 | 🪙 收集金币升级装备 | 💎 收集神器碎片</p>
-        <p className="mt-1">🛡️ 护盾恢复生命 | ⚡ 快速射击 | 🧲 磁吸金币</p>
+        <p className="mt-1">🛡️ 护盾恢复生命 | ⚡ 快速射击 | 🧲 磁吸金币 | ↩️ Ctrl+Z 撤销 | ↪️ Ctrl+Y 重做</p>
       </div>
     </div>
   );

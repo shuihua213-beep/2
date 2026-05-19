@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 
+import { CloudSync, Upgrades } from './CloudSync';
+
 // 游戏常量
 const GAME_WIDTH = 900;
 const GAME_HEIGHT = 500;
@@ -55,13 +57,6 @@ interface GameState {
   distance: number;
 }
 
-interface Upgrades {
-  weaponDamage: number;
-  weaponFireRate: number;
-  camelHealth: number;
-  camelSpeed: number;
-}
-
 const UPGRADE_COSTS = {
   weaponDamage: [100, 250, 500, 1000, 2000],
   weaponFireRate: [150, 300, 600, 1200, 2500],
@@ -81,24 +76,54 @@ export default function App() {
   const animationRef = useRef<number>(0);
   const lastTimeRef = useRef<number>(0);
   
-  const [gameState, setGameState] = useState<GameState>({
-    status: 'menu',
-    score: 0,
-    coins: 0,
-    artifacts: 0,
-    totalCoins: 0,
-    health: 100,
-    maxHealth: 100,
-    level: 1,
-    distance: 0,
+  // 云同步状态
+  const [userId, setUserId] = useState<string | null>(() => localStorage.getItem('game_userId') || null);
+  const [localLastUpdated, setLocalLastUpdated] = useState<number>(() => Number(localStorage.getItem('game_lastUpdated')) || Date.now());
+
+  const handleDataChange = useCallback(() => {
+    const now = Date.now();
+    setLocalLastUpdated(now);
+    localStorage.setItem('game_lastUpdated', now.toString());
+  }, []);
+
+  const [gameState, setGameState] = useState<GameState>(() => {
+    const saved = localStorage.getItem('game_state');
+    const parsed = saved ? JSON.parse(saved) : null;
+    return {
+      status: 'menu',
+      score: 0,
+      coins: parsed?.coins || 0,
+      artifacts: parsed?.artifacts || 0,
+      totalCoins: parsed?.totalCoins || 0,
+      health: 100,
+      maxHealth: 100,
+      level: 1,
+      distance: 0,
+    };
   });
 
-  const [upgrades, setUpgrades] = useState<Upgrades>({
-    weaponDamage: 0,
-    weaponFireRate: 0,
-    camelHealth: 0,
-    camelSpeed: 0,
+  const [upgrades, setUpgrades] = useState<Upgrades>(() => {
+    const saved = localStorage.getItem('game_upgrades');
+    return saved ? JSON.parse(saved) : {
+      weaponDamage: 0,
+      weaponFireRate: 0,
+      camelHealth: 0,
+      camelSpeed: 0,
+    };
   });
+
+  // 保存本地状态
+  useEffect(() => {
+    localStorage.setItem('game_state', JSON.stringify({
+      coins: gameState.coins,
+      artifacts: gameState.artifacts,
+      totalCoins: gameState.totalCoins,
+    }));
+  }, [gameState.coins, gameState.artifacts, gameState.totalCoins]);
+
+  useEffect(() => {
+    localStorage.setItem('game_upgrades', JSON.stringify(upgrades));
+  }, [upgrades]);
 
   const [enemies, setEnemies] = useState<Enemy[]>([]);
   const [collectibles, setCollectibles] = useState<Collectible[]>([]);
@@ -454,11 +479,17 @@ export default function App() {
 
   // 返回主菜单
   const goToMenu = () => {
-    setGameState(prev => ({
-      ...prev,
-      status: 'menu',
-      coins: prev.totalCoins,
-    }));
+    setGameState(prev => {
+      const nextState = {
+        ...prev,
+        status: 'menu' as const,
+        coins: prev.totalCoins,
+      };
+      if (prev.status === 'gameOver') {
+        handleDataChange();
+      }
+      return nextState;
+    });
     setShowUpgradePanel(false);
   };
 
@@ -480,6 +511,49 @@ export default function App() {
       ...prev,
       [type]: prev[type] + 1,
     }));
+    handleDataChange();
+  };
+
+  const handleLogin = () => {
+    const id = prompt('请输入用户ID进行云端同步：');
+    if (id) {
+      setUserId(id);
+      localStorage.setItem('game_userId', id);
+    }
+  };
+
+  const handleLogout = () => {
+    setUserId(null);
+    localStorage.removeItem('game_userId');
+  };
+
+  const handleUpload = () => {
+    if (!userId) return;
+    CloudSync.upload(userId, {
+      coins: gameState.totalCoins,
+      artifacts: gameState.artifacts,
+      upgrades
+    });
+    alert('上传成功！');
+  };
+
+  const handleSync = () => {
+    if (!userId) return;
+    const synced = CloudSync.sync(userId, {
+      coins: gameState.totalCoins,
+      artifacts: gameState.artifacts,
+      upgrades
+    }, localLastUpdated);
+    
+    setGameState(prev => ({
+      ...prev,
+      coins: synced.coins,
+      totalCoins: synced.coins,
+      artifacts: synced.artifacts
+    }));
+    setUpgrades(synced.upgrades);
+    handleDataChange();
+    alert('同步成功！');
   };
 
   return (
@@ -711,6 +785,42 @@ export default function App() {
               >
                 ⚙️ 升级商店
               </button>
+            </div>
+
+            {/* 云同步区域 */}
+            <div className="mt-4 flex flex-wrap justify-center gap-2">
+              {!userId ? (
+                <button
+                  className="bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-lg font-bold text-sm transition-colors"
+                  onClick={handleLogin}
+                >
+                  👤 登录云端
+                </button>
+              ) : (
+                <>
+                  <div className="bg-black/30 text-blue-200 px-3 py-2 rounded-lg text-sm flex items-center">
+                    <span>ID: {userId}</span>
+                  </div>
+                  <button
+                    className="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-lg font-bold text-sm transition-colors"
+                    onClick={handleUpload}
+                  >
+                    ☁️ 上传进度
+                  </button>
+                  <button
+                    className="bg-teal-600 hover:bg-teal-500 text-white px-4 py-2 rounded-lg font-bold text-sm transition-colors"
+                    onClick={handleSync}
+                  >
+                    🔄 下载同步
+                  </button>
+                  <button
+                    className="bg-red-800 hover:bg-red-700 text-white px-3 py-2 rounded-lg font-bold text-sm transition-colors"
+                    onClick={handleLogout}
+                  >
+                    登出
+                  </button>
+                </>
+              )}
             </div>
             
             {/* 升级面板 */}

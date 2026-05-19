@@ -1,0 +1,275 @@
+diff --git a/src/App.tsx b/src/App.tsx
+index 22e120a..beeafd6 100644
+--- a/src/App.tsx
++++ b/src/App.tsx
+@@ -1,4 +1,5 @@
+-import { useState, useEffect, useCallback, useRef } from 'react';
++import { useState, useEffect, useCallback, useRef, type MouseEvent, type TouchEvent } from 'react';
++import { DEFAULT_UPGRADES, createDefaultProgress, exportCloudRecord, loadCloudRecord, loadLocalProgress, loadSavedUserId, mergeSyncProgress, parseCloudRecord, saveCloudRecord, saveLocalProgress, saveSavedUserId, type SyncProgress, type Upgrades } from './CloudSync';
+ 
+ // 游戏常量
+ const GAME_WIDTH = 900;
+@@ -55,13 +56,6 @@ interface GameState {
+   distance: number;
+ }
+ 
+-interface Upgrades {
+-  weaponDamage: number;
+-  weaponFireRate: number;
+-  camelHealth: number;
+-  camelSpeed: number;
+-}
+-
+ const UPGRADE_COSTS = {
+   weaponDamage: [100, 250, 500, 1000, 2000],
+   weaponFireRate: [150, 300, 600, 1200, 2500],
+@@ -76,6 +70,14 @@ const UPGRADE_NAMES: Record<keyof Upgrades, string> = {
+   camelSpeed: '🐪 移动速度',
+ };
+ 
++const initialProgress = loadLocalProgress() ?? createDefaultProgress();
++const initialUserId = loadSavedUserId();
++const getProgressSignature = (progress: Pick<SyncProgress, 'totalCoins' | 'artifacts' | 'upgrades'>) => JSON.stringify({
++  totalCoins: progress.totalCoins,
++  artifacts: progress.artifacts,
++  upgrades: progress.upgrades,
++});
++
+ export default function App() {
+   const gameRef = useRef<HTMLDivElement>(null);
+   const animationRef = useRef<number>(0);
+@@ -84,20 +86,18 @@ export default function App() {
+   const [gameState, setGameState] = useState<GameState>({
+     status: 'menu',
+     score: 0,
+-    coins: 0,
+-    artifacts: 0,
+-    totalCoins: 0,
+-    health: 100,
+-    maxHealth: 100,
++    coins: initialProgress.totalCoins,
++    artifacts: initialProgress.artifacts,
++    totalCoins: initialProgress.totalCoins,
++    health: 100 + initialProgress.upgrades.camelHealth * 25,
++    maxHealth: 100 + initialProgress.upgrades.camelHealth * 25,
+     level: 1,
+     distance: 0,
+   });
+ 
+   const [upgrades, setUpgrades] = useState<Upgrades>({
+-    weaponDamage: 0,
+-    weaponFireRate: 0,
+-    camelHealth: 0,
+-    camelSpeed: 0,
++    ...DEFAULT_UPGRADES,
++    ...initialProgress.upgrades,
+   });
+ 
+   const [enemies, setEnemies] = useState<Enemy[]>([]);
+@@ -107,15 +107,49 @@ export default function App() {
+   const [camelFrame, setCamelFrame] = useState(0);
+   const [backgroundOffset, setBackgroundOffset] = useState(0);
+   const [showUpgradePanel, setShowUpgradePanel] = useState(false);
++  const [userId, setUserId] = useState(initialUserId);
+   
+   const lastShotRef = useRef(0);
+   const idCounterRef = useRef(0);
+   const spawnTimerRef = useRef(0);
+   const collectibleTimerRef = useRef(0);
+   const gameStateRef = useRef(gameState);
++  const progressUpdatedAtRef = useRef(initialProgress.updatedAt);
++  const progressSignatureRef = useRef(getProgressSignature(initialProgress));
+   
+   gameStateRef.current = gameState;
+ 
++  const persistProgress = useCallback((progress: SyncProgress) => {
++    progressUpdatedAtRef.current = progress.updatedAt;
++    progressSignatureRef.current = getProgressSignature(progress);
++    saveLocalProgress(progress);
++  }, []);
++
++  const getLocalProgress = useCallback((): SyncProgress => ({
++    totalCoins: gameStateRef.current.totalCoins,
++    artifacts: gameStateRef.current.artifacts,
++    upgrades: { ...upgrades },
++    updatedAt: progressUpdatedAtRef.current,
++  }), [upgrades]);
++
++  const applySyncedProgress = useCallback((progress: SyncProgress) => {
++    const maxHealth = 100 + progress.upgrades.camelHealth * 25;
++
++    setUpgrades({
++      ...DEFAULT_UPGRADES,
++      ...progress.upgrades,
++    });
++    setGameState(prev => ({
++      ...prev,
++      coins: progress.totalCoins,
++      totalCoins: progress.totalCoins,
++      artifacts: progress.artifacts,
++      maxHealth,
++      health: prev.status === 'playing' ? Math.min(prev.health, maxHealth) : maxHealth,
++    }));
++    persistProgress(progress);
++  }, [persistProgress]);
++
+   const getDamage = () => 25 + upgrades.weaponDamage * 15;
+   const getFireRate = () => 400 - upgrades.weaponFireRate * 60;
+   const getMaxHealth = () => 100 + upgrades.camelHealth * 25;
+@@ -208,7 +242,7 @@ export default function App() {
+   }, [upgrades.weaponFireRate]);
+ 
+   // 处理点击
+-  const handleClick = (e: React.MouseEvent<HTMLDivElement>) => {
++  const handleClick = (e: MouseEvent<HTMLDivElement>) => {
+     if (gameStateRef.current.status !== 'playing') return;
+     
+     const rect = e.currentTarget.getBoundingClientRect();
+@@ -221,7 +255,7 @@ export default function App() {
+   };
+ 
+   // 处理触摸
+-  const handleTouch = (e: React.TouchEvent<HTMLDivElement>) => {
++  const handleTouch = (e: TouchEvent<HTMLDivElement>) => {
+     if (gameStateRef.current.status !== 'playing') return;
+     e.preventDefault();
+     
+@@ -431,13 +465,101 @@ export default function App() {
+     };
+   }, [gameState.status, gameLoop]);
+ 
+-  // 开始游戏
++  useEffect(() => {
++    const nextProgress = {
++      totalCoins: gameState.totalCoins,
++      artifacts: gameState.artifacts,
++      upgrades,
++    };
++    const nextSignature = getProgressSignature(nextProgress);
++
++    if (nextSignature === progressSignatureRef.current) {
++      return;
++    }
++
++    persistProgress({
++      ...nextProgress,
++      upgrades: { ...upgrades },
++      updatedAt: Date.now(),
++    });
++  }, [gameState.totalCoins, gameState.artifacts, upgrades, persistProgress]);
++
++  const handleLogin = () => {
++    const nextUserId = window.prompt('请输入要登录的用户 ID', userId)?.trim();
++    if (!nextUserId) {
++      return;
++    }
++
++    const localProgress = getLocalProgress();
++    const cloudRecord = {
++      userId: nextUserId,
++      ...localProgress,
++    };
++
++    saveCloudRecord(cloudRecord);
++    saveSavedUserId(nextUserId);
++    setUserId(nextUserId);
++
++    const exported = exportCloudRecord(cloudRecord);
++    if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
++      void navigator.clipboard.writeText(exported).catch(() => undefined);
++    }
++
++    window.prompt('已登录并上传到云端。若需在其他设备同步，请复制下面的同步 JSON。', exported);
++  };
++
++  const handleSync = () => {
++    let nextUserId = userId.trim();
++
++    if (!nextUserId) {
++      nextUserId = window.prompt('请输入要同步的用户 ID', '')?.trim() ?? '';
++    }
++
++    if (!nextUserId) {
++      return;
++    }
++
++    let remoteRecord = loadCloudRecord(nextUserId);
++
++    if (!remoteRecord) {
++      const imported = window.prompt('当前设备没有该用户的云端记录，请粘贴另一台设备导出的同步 JSON。', '');
++      if (!imported) {
++        return;
++      }
++
++      const parsed = parseCloudRecord(imported);
++      if (!parsed) {
++        window.alert('同步失败：JSON 无效。');
++        return;
++      }
++
++      remoteRecord = parsed;
++      nextUserId = parsed.userId;
++      saveCloudRecord(parsed);
++    }
++
++    const mergedProgress = mergeSyncProgress(getLocalProgress(), remoteRecord);
++    const resolvedProgress = {
++      ...mergedProgress,
++      updatedAt: Date.now(),
++    };
++
++    applySyncedProgress(resolvedProgress);
++    saveCloudRecord({
++      userId: nextUserId,
++      ...resolvedProgress,
++    });
++    saveSavedUserId(nextUserId);
++    setUserId(nextUserId);
++    window.alert('同步完成，技能树已按最高等级合并，资源冲突按最后更新时间处理。');
++  };
++
+   const startGame = () => {
+     setGameState({
+       status: 'playing',
+       score: 0,
+       coins: gameState.coins,
+-      artifacts: 0,
++      artifacts: gameState.artifacts,
+       totalCoins: gameState.coins,
+       health: getMaxHealth(),
+       maxHealth: getMaxHealth(),
+@@ -697,7 +819,7 @@ export default function App() {
+               💰 金币: {gameState.coins} | 💎 神器: {gameState.artifacts}
+             </p>
+             
+-            <div className="flex flex-col gap-3">
++            <div className="flex flex-col gap-3 w-full max-w-sm px-4">
+               <button 
+                 className="bg-green-500 hover:bg-green-400 text-white px-6 py-3 rounded-lg text-lg md:text-xl font-bold transition-all hover:scale-105 shadow-lg"
+                 onClick={startGame}
+@@ -711,6 +833,25 @@ export default function App() {
+               >
+                 ⚙️ 升级商店
+               </button>
++
++              <div className="grid grid-cols-2 gap-3">
++                <button 
++                  className="bg-sky-500 hover:bg-sky-400 text-white px-4 py-2 rounded-lg font-bold transition-all hover:scale-105 shadow-lg"
++                  onClick={handleLogin}
++                >
++                  ☁️ 登录
++                </button>
++                <button 
++                  className="bg-violet-500 hover:bg-violet-400 text-white px-4 py-2 rounded-lg font-bold transition-all hover:scale-105 shadow-lg"
++                  onClick={handleSync}
++                >
++                  🔄 同步
++                </button>
++              </div>
++
++              <div className="rounded-lg bg-black/25 px-4 py-2 text-center text-xs md:text-sm text-amber-100">
++                {userId ? `已登录用户：${userId}` : '未登录云端账号'}
++              </div>
+             </div>
+             
+             {/* 升级面板 */}

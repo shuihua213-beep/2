@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@aidp/web-code-check": "^1.1.10",
+    "immer": "^10.1.1",
     "playwright": "^1.58.2",
     "react": "18.2.0",
     "react-dom": "18.2.0"

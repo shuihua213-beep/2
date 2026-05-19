@@ -1,0 +1,157 @@
+diff --git a/package.json b/package.json
+index 4cd2d7f..f9487ef 100644
+--- a/package.json
++++ b/package.json
+@@ -10,6 +10,7 @@
+   },
+   "dependencies": {
+     "@aidp/web-code-check": "^1.1.10",
++    "immer": "^10.0.3",
+     "playwright": "^1.58.2",
+     "react": "18.2.0",
+     "react-dom": "18.2.0"
+diff --git a/src/App.tsx b/src/App.tsx
+index 22e120a..d739e80 100644
+--- a/src/App.tsx
++++ b/src/App.tsx
+@@ -1,4 +1,6 @@
+ import { useState, useEffect, useCallback, useRef } from 'react';
++import { useUndoRedo } from './useUndoRedo';
++import { GameState, Upgrades } from './historyReducer';
+ 
+ // 游戏常量
+ const GAME_WIDTH = 900;
+@@ -43,24 +45,7 @@ interface Particle {
+   color: string;
+ }
+ 
+-interface GameState {
+-  status: 'menu' | 'playing' | 'gameOver';
+-  score: number;
+-  coins: number;
+-  artifacts: number;
+-  totalCoins: number;
+-  health: number;
+-  maxHealth: number;
+-  level: number;
+-  distance: number;
+-}
+ 
+-interface Upgrades {
+-  weaponDamage: number;
+-  weaponFireRate: number;
+-  camelHealth: number;
+-  camelSpeed: number;
+-}
+ 
+ const UPGRADE_COSTS = {
+   weaponDamage: [100, 250, 500, 1000, 2000],
+@@ -81,24 +66,14 @@ export default function App() {
+   const animationRef = useRef<number>(0);
+   const lastTimeRef = useRef<number>(0);
+   
+-  const [gameState, setGameState] = useState<GameState>({
+-    status: 'menu',
+-    score: 0,
+-    coins: 0,
+-    artifacts: 0,
+-    totalCoins: 0,
+-    health: 100,
+-    maxHealth: 100,
+-    level: 1,
+-    distance: 0,
+-  });
++  const { state, canUndo, canRedo, undo, redo, dispatch } = useUndoRedo();
++  const { gameState, upgrades } = state;
++
++  const setGameState = useCallback((updater: GameState | ((prev: GameState) => GameState)) => {
++    dispatch({ type: 'SET_GAME_STATE', payload: updater, ignoreHistory: true });
++  }, [dispatch]);
++
+ 
+-  const [upgrades, setUpgrades] = useState<Upgrades>({
+-    weaponDamage: 0,
+-    weaponFireRate: 0,
+-    camelHealth: 0,
+-    camelSpeed: 0,
+-  });
+ 
+   const [enemies, setEnemies] = useState<Enemy[]>([]);
+   const [collectibles, setCollectibles] = useState<Collectible[]>([]);
+@@ -433,17 +408,7 @@ export default function App() {
+ 
+   // 开始游戏
+   const startGame = () => {
+-    setGameState({
+-      status: 'playing',
+-      score: 0,
+-      coins: gameState.coins,
+-      artifacts: 0,
+-      totalCoins: gameState.coins,
+-      health: getMaxHealth(),
+-      maxHealth: getMaxHealth(),
+-      level: 1,
+-      distance: 0,
+-    });
++    dispatch({ type: 'START_GAME', payload: { maxHealth: getMaxHealth() } });
+     setEnemies([]);
+     setCollectibles([]);
+     setBullets([]);
+@@ -454,11 +419,7 @@ export default function App() {
+ 
+   // 返回主菜单
+   const goToMenu = () => {
+-    setGameState(prev => ({
+-      ...prev,
+-      status: 'menu',
+-      coins: prev.totalCoins,
+-    }));
++    dispatch({ type: 'GO_TO_MENU' });
+     setShowUpgradePanel(false);
+   };
+ 
+@@ -470,20 +431,34 @@ export default function App() {
+     const cost = UPGRADE_COSTS[type][level];
+     if (gameState.coins < cost) return;
+     
+-    setGameState(prev => ({
+-      ...prev,
+-      coins: prev.coins - cost,
+-      totalCoins: prev.totalCoins - cost,
+-    }));
+-    
+-    setUpgrades(prev => ({
+-      ...prev,
+-      [type]: prev[type] + 1,
+-    }));
++    dispatch({ type: 'BUY_UPGRADE', payload: { type, cost } });
+   };
+ 
+   return (
+     <div className="min-h-screen bg-gradient-to-b from-amber-200 via-orange-300 to-amber-500 flex flex-col items-center justify-center p-4">
++      <div className="absolute top-4 right-4 flex gap-2 z-50">
++        <button
++          onClick={undo}
++          disabled={!canUndo}
++          className={`px-4 py-2 rounded-lg font-bold shadow-lg transition-all ${
++            canUndo ? 'bg-blue-500 hover:bg-blue-400 text-white cursor-pointer' : 'bg-gray-400 text-gray-200 cursor-not-allowed'
++          }`}
++          title="撤销 (Ctrl+Z)"
++        >
++          ↩️ 撤销
++        </button>
++        <button
++          onClick={redo}
++          disabled={!canRedo}
++          className={`px-4 py-2 rounded-lg font-bold shadow-lg transition-all ${
++            canRedo ? 'bg-blue-500 hover:bg-blue-400 text-white cursor-pointer' : 'bg-gray-400 text-gray-200 cursor-not-allowed'
++          }`}
++          title="重做 (Ctrl+Y)"
++        >
++          ↪️ 重做
++        </button>
++      </div>
++      
+       <h1 className="text-2xl md:text-4xl font-bold text-amber-900 mb-4 drop-shadow-lg text-center">
+         🏜️ 沙丘游侠：宝藏猎手 🐪
+       </h1>

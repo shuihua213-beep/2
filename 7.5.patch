@@ -1,0 +1,504 @@
+diff --git a/src/App.tsx b/src/App.tsx
+index 22e120a..b82f329 100644
+--- a/src/App.tsx
++++ b/src/App.tsx
+@@ -1,6 +1,7 @@
+ import { useState, useEffect, useCallback, useRef } from 'react';
++import { useUndoRedo } from './useUndoRedo';
++import { GameState, Upgrades } from './historyReducer';
+ 
+-// 游戏常量
+ const GAME_WIDTH = 900;
+ const GAME_HEIGHT = 500;
+ const PLAYER_X = 120;
+@@ -43,25 +44,6 @@ interface Particle {
+   color: string;
+ }
+ 
+-interface GameState {
+-  status: 'menu' | 'playing' | 'gameOver';
+-  score: number;
+-  coins: number;
+-  artifacts: number;
+-  totalCoins: number;
+-  health: number;
+-  maxHealth: number;
+-  level: number;
+-  distance: number;
+-}
+-
+-interface Upgrades {
+-  weaponDamage: number;
+-  weaponFireRate: number;
+-  camelHealth: number;
+-  camelSpeed: number;
+-}
+-
+ const UPGRADE_COSTS = {
+   weaponDamage: [100, 250, 500, 1000, 2000],
+   weaponFireRate: [150, 300, 600, 1200, 2500],
+@@ -81,23 +63,34 @@ export default function App() {
+   const animationRef = useRef<number>(0);
+   const lastTimeRef = useRef<number>(0);
+   
+-  const [gameState, setGameState] = useState<GameState>({
+-    status: 'menu',
+-    score: 0,
+-    coins: 0,
+-    artifacts: 0,
+-    totalCoins: 0,
+-    health: 100,
+-    maxHealth: 100,
+-    level: 1,
+-    distance: 0,
+-  });
+-
+-  const [upgrades, setUpgrades] = useState<Upgrades>({
+-    weaponDamage: 0,
+-    weaponFireRate: 0,
+-    camelHealth: 0,
+-    camelSpeed: 0,
++  const {
++    gameState,
++    upgrades,
++    setGameState,
++    setUpgrades,
++    undo,
++    redo,
++    canUndo,
++    canRedo,
++    batch,
++  } = useUndoRedo({
++    gameState: {
++      status: 'menu',
++      score: 0,
++      coins: 0,
++      artifacts: 0,
++      totalCoins: 0,
++      health: 100,
++      maxHealth: 100,
++      level: 1,
++      distance: 0,
++    },
++    upgrades: {
++      weaponDamage: 0,
++      weaponFireRate: 0,
++      camelHealth: 0,
++      camelSpeed: 0,
++    },
+   });
+ 
+   const [enemies, setEnemies] = useState<Enemy[]>([]);
+@@ -238,184 +231,171 @@ export default function App() {
+   // 游戏主循环
+   const gameLoop = useCallback((timestamp: number) => {
+     if (gameStateRef.current.status !== 'playing') return;
+-    
++
+     const deltaTime = timestamp - lastTimeRef.current;
+     lastTimeRef.current = timestamp;
+-    
++
+     const speed = getSpeed();
+-    
+-    // 更新背景
++
+     setBackgroundOffset(prev => (prev + speed) % 600);
+     setCamelFrame(prev => (prev + 0.15) % 4);
+-    
+-    // 更新距离和等级
+-    setGameState(prev => {
+-      const newDistance = prev.distance + speed * 0.1;
+-      const newLevel = Math.min(5, Math.floor(newDistance / 500) + 1);
+-      return { ...prev, distance: newDistance, level: newLevel };
+-    });
+-    
+-    // 生成敌人
+-    spawnTimerRef.current += deltaTime;
+-    const spawnInterval = Math.max(1500 - gameStateRef.current.level * 200, 600);
+-    if (spawnTimerRef.current > spawnInterval) {
+-      spawnEnemy();
+-      spawnTimerRef.current = 0;
+-    }
+-    
+-    // 生成收集物
+-    collectibleTimerRef.current += deltaTime;
+-    if (collectibleTimerRef.current > 1200) {
+-      spawnCollectible();
+-      collectibleTimerRef.current = 0;
+-    }
+-    
+-    // 更新子弹
+-    setBullets(prev => prev
+-      .map(b => ({ ...b, x: b.x + b.vx, y: b.y + b.vy }))
+-      .filter(b => b.x < GAME_WIDTH + 50 && b.x > -50 && b.y > -50 && b.y < GAME_HEIGHT + 50)
+-    );
+-    
+-    // 更新粒子
+-    setParticles(prev => prev
+-      .map(p => ({ ...p, x: p.x + p.vx, y: p.y + p.vy, vy: p.vy + 0.3, life: p.life - 1 }))
+-      .filter(p => p.life > 0)
+-    );
+-    
+-    // 更新敌人位置
+-    setEnemies(prev => {
+-      const updated: Enemy[] = [];
+-      let damage = 0;
+-      
+-      prev.forEach(enemy => {
+-        const newX = enemy.x - enemy.speed;
+-        if (newX < -50) {
+-          // 敌人逃脱，造成伤害
+-          damage += enemy.damage;
+-        } else {
+-          updated.push({ ...enemy, x: newX });
+-        }
++
++    batch(() => {
++      setGameState(prev => {
++        const newDistance = prev.distance + speed * 0.1;
++        const newLevel = Math.min(5, Math.floor(newDistance / 500) + 1);
++        return { ...prev, distance: newDistance, level: newLevel };
+       });
+-      
+-      if (damage > 0) {
+-        setGameState(prev => ({
+-          ...prev,
+-          health: Math.max(0, prev.health - damage),
+-        }));
++
++      spawnTimerRef.current += deltaTime;
++      const spawnInterval = Math.max(1500 - gameStateRef.current.level * 200, 600);
++      if (spawnTimerRef.current > spawnInterval) {
++        spawnEnemy();
++        spawnTimerRef.current = 0;
+       }
+-      
+-      return updated;
+-    });
+-    
+-    // 更新收集物位置
+-    setCollectibles(prev => prev
+-      .map(c => ({ ...c, x: c.x - speed * 1.5 }))
+-      .filter(c => c.x > -50)
+-    );
+-    
+-    // 碰撞检测 - 子弹与敌人
+-    const damage = getDamage();
+-    setBullets(prevBullets => {
+-      const remainingBullets: Bullet[] = [];
+-      
+-      setEnemies(prevEnemies => {
+-        const remainingEnemies: Enemy[] = [];
+-        const killedEnemyIds: number[] = [];
+-        
+-        prevEnemies.forEach(enemy => {
+-          let enemyHealth = enemy.health;
+-          let wasHit = false;
+-          
+-          prevBullets.forEach(bullet => {
+-            if (killedEnemyIds.includes(enemy.id)) return;
+-            const dx = bullet.x - enemy.x;
+-            const dy = bullet.y - (enemy.y - 20);
+-            if (Math.abs(dx) < 40 && Math.abs(dy) < 40) {
+-              enemyHealth -= damage;
+-              wasHit = true;
+-              // 添加击中效果
+-              createParticles(bullet.x, bullet.y, '#FFD700', 5);
+-            }
+-          });
+-          
+-          if (enemyHealth <= 0) {
+-            // 敌人死亡
+-            killedEnemyIds.push(enemy.id);
+-            setGameState(prev => ({
+-              ...prev,
+-              score: prev.score + (enemy.type === 'motorcycle' ? 50 : 30),
+-              coins: prev.coins + (enemy.type === 'motorcycle' ? 15 : 10),
+-              totalCoins: prev.totalCoins + (enemy.type === 'motorcycle' ? 15 : 10),
+-            }));
+-            createParticles(enemy.x, enemy.y - 20, enemy.type === 'motorcycle' ? '#FF6B6B' : '#8B4513', 15);
+-          } else if (wasHit) {
+-            remainingEnemies.push({ ...enemy, health: enemyHealth });
++
++      collectibleTimerRef.current += deltaTime;
++      if (collectibleTimerRef.current > 1200) {
++        spawnCollectible();
++        collectibleTimerRef.current = 0;
++      }
++
++      setBullets(prev => prev
++        .map(b => ({ ...b, x: b.x + b.vx, y: b.y + b.vy }))
++        .filter(b => b.x < GAME_WIDTH + 50 && b.x > -50 && b.y > -50 && b.y < GAME_HEIGHT + 50)
++      );
++
++      setParticles(prev => prev
++        .map(p => ({ ...p, x: p.x + p.vx, y: p.y + p.vy, vy: p.vy + 0.3, life: p.life - 1 }))
++        .filter(p => p.life > 0)
++      );
++
++      setEnemies(prev => {
++        const updated: Enemy[] = [];
++        let damage = 0;
++
++        prev.forEach(enemy => {
++          const newX = enemy.x - enemy.speed;
++          if (newX < -50) {
++            damage += enemy.damage;
+           } else {
+-            remainingEnemies.push(enemy);
++            updated.push({ ...enemy, x: newX });
+           }
+         });
+-        
+-        // 过滤掉击中敌人的子弹
+-        prevBullets.forEach(bullet => {
+-          let hit = false;
++
++        if (damage > 0) {
++          setGameState(prev => ({
++            ...prev,
++            health: Math.max(0, prev.health - damage),
++          }));
++        }
++
++        return updated;
++      });
++
++      setCollectibles(prev => prev
++        .map(c => ({ ...c, x: c.x - speed * 1.5 }))
++        .filter(c => c.x > -50)
++      );
++
++      const damage = getDamage();
++      setBullets(prevBullets => {
++        const remainingBullets: Bullet[] = [];
++
++        setEnemies(prevEnemies => {
++          const remainingEnemies: Enemy[] = [];
++          const killedEnemyIds: number[] = [];
++
+           prevEnemies.forEach(enemy => {
+-            const dx = bullet.x - enemy.x;
+-            const dy = bullet.y - (enemy.y - 20);
+-            if (Math.abs(dx) < 40 && Math.abs(dy) < 40) {
+-              hit = true;
++            let enemyHealth = enemy.health;
++            let wasHit = false;
++
++            prevBullets.forEach(bullet => {
++              if (killedEnemyIds.includes(enemy.id)) return;
++              const dx = bullet.x - enemy.x;
++              const dy = bullet.y - (enemy.y - 20);
++              if (Math.abs(dx) < 40 && Math.abs(dy) < 40) {
++                enemyHealth -= damage;
++                wasHit = true;
++                createParticles(bullet.x, bullet.y, '#FFD700', 5);
++              }
++            });
++
++            if (enemyHealth <= 0) {
++              killedEnemyIds.push(enemy.id);
++              setGameState(prev => ({
++                ...prev,
++                score: prev.score + (enemy.type === 'motorcycle' ? 50 : 30),
++                coins: prev.coins + (enemy.type === 'motorcycle' ? 15 : 10),
++                totalCoins: prev.totalCoins + (enemy.type === 'motorcycle' ? 15 : 10),
++              }));
++              createParticles(enemy.x, enemy.y - 20, enemy.type === 'motorcycle' ? '#FF6B6B' : '#8B4513', 15);
++            } else if (wasHit) {
++              remainingEnemies.push({ ...enemy, health: enemyHealth });
++            } else {
++              remainingEnemies.push(enemy);
+             }
+           });
+-          if (!hit) remainingBullets.push(bullet);
++
++          prevBullets.forEach(bullet => {
++            let hit = false;
++            prevEnemies.forEach(enemy => {
++              const dx = bullet.x - enemy.x;
++              const dy = bullet.y - (enemy.y - 20);
++              if (Math.abs(dx) < 40 && Math.abs(dy) < 40) {
++                hit = true;
++              }
++            });
++            if (!hit) remainingBullets.push(bullet);
++          });
++
++          return remainingEnemies;
+         });
+-        
+-        return remainingEnemies;
++
++        return remainingBullets;
+       });
+-      
+-      return remainingBullets;
+-    });
+-    
+-    // 碰撞检测 - 收集物
+-    setCollectibles(prev => {
+-      const remaining: Collectible[] = [];
+-      
+-      prev.forEach(c => {
+-        const dx = c.x - PLAYER_X;
+-        const dy = c.y - (GROUND_Y - 50);
+-        if (Math.abs(dx) < 60 && Math.abs(dy) < 60) {
+-          // 收集到物品
+-          createParticles(c.x, c.y, c.type === 'coin' ? '#FFD700' : '#9333EA', 8);
+-          
+-          setGameState(prevState => {
+-            switch (c.type) {
+-              case 'coin':
+-                return { ...prevState, coins: prevState.coins + 5, score: prevState.score + 5, totalCoins: prevState.totalCoins + 5 };
+-              case 'artifact':
+-                return { ...prevState, artifacts: prevState.artifacts + 1, score: prevState.score + 100 };
+-              case 'shield':
+-                return { ...prevState, health: Math.min(prevState.maxHealth, prevState.health + 30) };
+-              case 'rapidFire':
+-              case 'magnet':
+-                return { ...prevState, score: prevState.score + 50 };
+-              default:
+-                return prevState;
+-            }
+-          });
+-        } else {
+-          remaining.push(c);
+-        }
++
++      setCollectibles(prev => {
++        const remaining: Collectible[] = [];
++
++        prev.forEach(c => {
++          const dx = c.x - PLAYER_X;
++          const dy = c.y - (GROUND_Y - 50);
++          if (Math.abs(dx) < 60 && Math.abs(dy) < 60) {
++            createParticles(c.x, c.y, c.type === 'coin' ? '#FFD700' : '#9333EA', 8);
++
++            setGameState(prevState => {
++              switch (c.type) {
++                case 'coin':
++                  return { ...prevState, coins: prevState.coins + 5, score: prevState.score + 5, totalCoins: prevState.totalCoins + 5 };
++                case 'artifact':
++                  return { ...prevState, artifacts: prevState.artifacts + 1, score: prevState.score + 100 };
++                case 'shield':
++                  return { ...prevState, health: Math.min(prevState.maxHealth, prevState.health + 30) };
++                case 'rapidFire':
++                case 'magnet':
++                  return { ...prevState, score: prevState.score + 50 };
++                default:
++                  return prevState;
++              }
++            });
++          } else {
++            remaining.push(c);
++          }
++        });
++
++        return remaining;
+       });
+-      
+-      return remaining;
++
++      if (gameStateRef.current.health <= 0) {
++        setGameState(prev => ({ ...prev, status: 'gameOver' }));
++      }
+     });
+-    
+-    // 检查游戏结束
+-    if (gameStateRef.current.health <= 0) {
+-      setGameState(prev => ({ ...prev, status: 'gameOver' }));
+-      return;
+-    }
+-    
++
++    if (gameStateRef.current.health <= 0) return;
++
+     animationRef.current = requestAnimationFrame(gameLoop);
+-  }, [spawnEnemy, spawnCollectible, upgrades]);
++  }, [spawnEnemy, spawnCollectible, upgrades, batch]);
+ 
+   // 开始游戏循环
+   useEffect(() => {
+@@ -466,20 +446,22 @@ export default function App() {
+   const buyUpgrade = (type: keyof Upgrades) => {
+     const level = upgrades[type];
+     if (level >= 5) return;
+-    
++
+     const cost = UPGRADE_COSTS[type][level];
+     if (gameState.coins < cost) return;
+-    
+-    setGameState(prev => ({
+-      ...prev,
+-      coins: prev.coins - cost,
+-      totalCoins: prev.totalCoins - cost,
+-    }));
+-    
+-    setUpgrades(prev => ({
+-      ...prev,
+-      [type]: prev[type] + 1,
+-    }));
++
++    batch(() => {
++      setGameState(prev => ({
++        ...prev,
++        coins: prev.coins - cost,
++        totalCoins: prev.totalCoins - cost,
++      }));
++
++      setUpgrades(prev => ({
++        ...prev,
++        [type]: prev[type] + 1,
++      }));
++    });
+   };
+ 
+   return (
+@@ -792,12 +774,37 @@ export default function App() {
+           </div>
+         )}
+       </div>
+-      
+-      {/* 底部说明 */}
+-      <div className="mt-4 text-amber-900 text-xs md:text-sm text-center max-w-lg">
+-        <p>🎯 点击屏幕射击土匪 | 🪙 收集金币升级装备 | 💎 收集神器碎片</p>
+-        <p className="mt-1">🛡️ 护盾恢复生命 | ⚡ 快速射击 | 🧲 磁吸金币</p>
+-      </div>
++
++    <div className="flex gap-2 mt-3 justify-center">
++      <button
++        className={`px-3 py-1 rounded text-sm font-bold transition-all ${
++          canUndo
++            ? 'bg-blue-500 hover:bg-blue-400 text-white shadow-lg'
++            : 'bg-gray-600 text-gray-400 cursor-not-allowed'
++        }`}
++        onClick={(e) => { e.stopPropagation(); undo(); }}
++        disabled={!canUndo}
++        title="撤销 (Ctrl+Z)"
++      >
++        ↩️ 撤销
++      </button>
++      <button
++        className={`px-3 py-1 rounded text-sm font-bold transition-all ${
++          canRedo
++            ? 'bg-blue-500 hover:bg-blue-400 text-white shadow-lg'
++            : 'bg-gray-600 text-gray-400 cursor-not-allowed'
++        }`}
++        onClick={(e) => { e.stopPropagation(); redo(); }}
++        disabled={!canRedo}
++        title="重做 (Ctrl+Y)"
++      >
++        ↪️ 重做
++      </button>
+     </div>
+-  );
+-}
++
++    <div className="mt-4 text-amber-900 text-xs md:text-sm text-center max-w-lg">
++      <p>🎯 点击屏幕射击土匪 | 🪙 收集金币升级装备 | 💎 收集神器碎片</p>
++      <p className="mt-1">🛡️ 护盾恢复生命 | ⚡ 快速射击 | 🧲 磁吸金币 | ↩️ Ctrl+Z 撤销 | ↪️ Ctrl+Y 重做</p>
++    </div>
++  </div>
++);

@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { useYjsSync } from './YjsBinding';
 
 // 游戏常量
 const GAME_WIDTH = 900;
@@ -80,7 +81,21 @@ export default function App() {
   const gameRef = useRef<HTMLDivElement>(null);
   const animationRef = useRef<number>(0);
   const lastTimeRef = useRef<number>(0);
-  
+
+  const {
+    syncedCoins,
+    syncedUpgrades: upgrades,
+    syncCoins,
+    syncUpgrade,
+    cursors,
+    setHoveredUpgrade,
+  } = useYjsSync(0, {
+    weaponDamage: 0,
+    weaponFireRate: 0,
+    camelHealth: 0,
+    camelSpeed: 0,
+  });
+
   const [gameState, setGameState] = useState<GameState>({
     status: 'menu',
     score: 0,
@@ -91,13 +106,6 @@ export default function App() {
     maxHealth: 100,
     level: 1,
     distance: 0,
-  });
-
-  const [upgrades, setUpgrades] = useState<Upgrades>({
-    weaponDamage: 0,
-    weaponFireRate: 0,
-    camelHealth: 0,
-    camelSpeed: 0,
   });
 
   const [enemies, setEnemies] = useState<Enemy[]>([]);
@@ -339,14 +347,13 @@ export default function App() {
           });
           
           if (enemyHealth <= 0) {
-            // 敌人死亡
             killedEnemyIds.push(enemy.id);
             setGameState(prev => ({
               ...prev,
               score: prev.score + (enemy.type === 'motorcycle' ? 50 : 30),
-              coins: prev.coins + (enemy.type === 'motorcycle' ? 15 : 10),
-              totalCoins: prev.totalCoins + (enemy.type === 'motorcycle' ? 15 : 10),
             }));
+            const reward = enemy.type === 'motorcycle' ? 15 : 10;
+            syncCoins((prev: number) => prev + reward);
             createParticles(enemy.x, enemy.y - 20, enemy.type === 'motorcycle' ? '#FF6B6B' : '#8B4513', 15);
           } else if (wasHit) {
             remainingEnemies.push({ ...enemy, health: enemyHealth });
@@ -388,7 +395,8 @@ export default function App() {
           setGameState(prevState => {
             switch (c.type) {
               case 'coin':
-                return { ...prevState, coins: prevState.coins + 5, score: prevState.score + 5, totalCoins: prevState.totalCoins + 5 };
+                syncCoins((prev: number) => prev + 5);
+                return { ...prevState, score: prevState.score + 5 };
               case 'artifact':
                 return { ...prevState, artifacts: prevState.artifacts + 1, score: prevState.score + 100 };
               case 'shield':
@@ -436,9 +444,9 @@ export default function App() {
     setGameState({
       status: 'playing',
       score: 0,
-      coins: gameState.coins,
+      coins: syncedCoins,
       artifacts: 0,
-      totalCoins: gameState.coins,
+      totalCoins: syncedCoins,
       health: getMaxHealth(),
       maxHealth: getMaxHealth(),
       level: 1,
@@ -457,29 +465,19 @@ export default function App() {
     setGameState(prev => ({
       ...prev,
       status: 'menu',
-      coins: prev.totalCoins,
     }));
     setShowUpgradePanel(false);
   };
 
-  // 升级
   const buyUpgrade = (type: keyof Upgrades) => {
     const level = upgrades[type];
     if (level >= 5) return;
     
     const cost = UPGRADE_COSTS[type][level];
-    if (gameState.coins < cost) return;
+    if (syncedCoins < cost) return;
     
-    setGameState(prev => ({
-      ...prev,
-      coins: prev.coins - cost,
-      totalCoins: prev.totalCoins - cost,
-    }));
-    
-    setUpgrades(prev => ({
-      ...prev,
-      [type]: prev[type] + 1,
-    }));
+    syncCoins((prev: number) => prev - cost);
+    syncUpgrade(type, level + 1);
   };
 
   return (
@@ -567,7 +565,7 @@ export default function App() {
                 <span className="text-xs">{gameState.health}/{gameState.maxHealth}</span>
               </div>
               <div className="flex gap-2 md:gap-4">
-                <span>💰 {gameState.coins}</span>
+                <span>💰 {syncedCoins}</span>
                 <span>🏆 {gameState.score}</span>
                 <span>⭐ {gameState.level}</span>
               </div>
@@ -694,7 +692,7 @@ export default function App() {
               在广袤的沙漠中收集宝藏，击退土匪！
             </p>
             <p className="text-yellow-300 text-lg md:text-xl mb-4">
-              💰 金币: {gameState.coins} | 💎 神器: {gameState.artifacts}
+              💰 金币: {syncedCoins} | 💎 神器: {gameState.artifacts}
             </p>
             
             <div className="flex flex-col gap-3">
@@ -722,10 +720,30 @@ export default function App() {
                     const level = upgrades[key];
                     const canUpgrade = level < 5;
                     const cost = canUpgrade ? UPGRADE_COSTS[key][level] : 0;
-                    const canAfford = gameState.coins >= cost;
+                    const canAfford = syncedCoins >= cost;
+                    const hoveringUsers = cursors.filter(c => c.hoveredUpgrade === key);
                     
                     return (
-                      <div key={key} className="flex items-center justify-between bg-amber-900/50 rounded-lg p-2">
+                      <div 
+                        key={key} 
+                        className="relative flex items-center justify-between bg-amber-900/50 rounded-lg p-2"
+                        onMouseEnter={() => setHoveredUpgrade(key)}
+                        onMouseLeave={() => setHoveredUpgrade(null)}
+                      >
+                        {hoveringUsers.length > 0 && (
+                          <div className="absolute -top-3 -right-2 flex -space-x-2">
+                            {hoveringUsers.map((user, i) => (
+                              <div
+                                key={i}
+                                className="w-6 h-6 rounded-full border-2 border-white flex items-center justify-center text-[10px] text-white font-bold shadow-md"
+                                style={{ backgroundColor: user.color, zIndex: 10 - i }}
+                                title="其他玩家正在查看此升级"
+                              >
+                                {user.id.slice(0, 2)}
+                              </div>
+                            ))}
+                          </div>
+                        )}
                         <div className="text-amber-100 text-sm">
                           <div>{UPGRADE_NAMES[key]}</div>
                           <div className="flex gap-1">
@@ -770,7 +788,7 @@ export default function App() {
             <h2 className="text-2xl md:text-4xl font-bold text-red-400 mb-4">游戏结束</h2>
             <div className="bg-gray-900/80 rounded-xl p-4 mb-4 text-center">
               <p className="text-white text-lg mb-2">🏆 最终得分: <span className="text-yellow-400 font-bold">{gameState.score}</span></p>
-              <p className="text-amber-200">💰 收集金币: {gameState.coins}</p>
+              <p className="text-amber-200">💰 收集金币: {syncedCoins}</p>
               <p className="text-purple-300">💎 神器碎片: {gameState.artifacts}</p>
               <p className="text-blue-300">📏 行进距离: {Math.floor(gameState.distance)}m</p>
               <p className="text-orange-300">⭐ 达到等级: {gameState.level}</p>

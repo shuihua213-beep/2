@@ -1,0 +1,180 @@
+diff --git a/src/App.tsx b/src/App.tsx
+index 22e120a..0cdfb67 100644
+--- a/src/App.tsx
++++ b/src/App.tsx
+@@ -1,4 +1,5 @@
+ import { useState, useEffect, useCallback, useRef } from 'react';
++import { CloudSync } from './CloudSync';
+ 
+ // 游戏常量
+ const GAME_WIDTH = 900;
+@@ -81,23 +82,38 @@ export default function App() {
+   const animationRef = useRef<number>(0);
+   const lastTimeRef = useRef<number>(0);
+   
+-  const [gameState, setGameState] = useState<GameState>({
+-    status: 'menu',
+-    score: 0,
+-    coins: 0,
+-    artifacts: 0,
+-    totalCoins: 0,
+-    health: 100,
+-    maxHealth: 100,
+-    level: 1,
+-    distance: 0,
++  const [userId, setUserId] = useState<string | null>(CloudSync.getCurrentUserId());
++  const [gameState, setGameState] = useState<GameState>(() => {
++    // Try to load from localStorage first
++    const saved = localStorage.getItem('local-game-state');
++    if (saved) {
++      return JSON.parse(saved);
++    }
++    return {
++      status: 'menu',
++      score: 0,
++      coins: 0,
++      artifacts: 0,
++      totalCoins: 0,
++      health: 100,
++      maxHealth: 100,
++      level: 1,
++      distance: 0,
++    };
+   });
+ 
+-  const [upgrades, setUpgrades] = useState<Upgrades>({
+-    weaponDamage: 0,
+-    weaponFireRate: 0,
+-    camelHealth: 0,
+-    camelSpeed: 0,
++  const [upgrades, setUpgrades] = useState<Upgrades>(() => {
++    // Try to load from localStorage first
++    const saved = localStorage.getItem('local-upgrades');
++    if (saved) {
++      return JSON.parse(saved);
++    }
++    return {
++      weaponDamage: 0,
++      weaponFireRate: 0,
++      camelHealth: 0,
++      camelSpeed: 0,
++    };
+   });
+ 
+   const [enemies, setEnemies] = useState<Enemy[]>([]);
+@@ -462,6 +478,74 @@ export default function App() {
+     setShowUpgradePanel(false);
+   };
+ 
++  // Save to localStorage whenever gameState or upgrades change
++  useEffect(() => {
++    localStorage.setItem('local-game-state', JSON.stringify(gameState));
++  }, [gameState]);
++
++  useEffect(() => {
++    localStorage.setItem('local-upgrades', JSON.stringify(upgrades));
++  }, [upgrades]);
++
++  // Login function
++  const handleLogin = () => {
++    const input = prompt('请输入用户 ID 以登录');
++    if (input && input.trim()) {
++      const id = input.trim();
++      CloudSync.setCurrentUserId(id);
++      setUserId(id);
++    }
++  };
++
++  // Logout function
++  const handleLogout = () => {
++    CloudSync.logout();
++    setUserId(null);
++  };
++
++  // Sync function
++  const handleSync = () => {
++    if (!userId) {
++      alert('请先登录！');
++      return;
++    }
++
++    const cloudData = CloudSync.download();
++    const localData = {
++      totalCoins: gameState.totalCoins,
++      artifacts: gameState.artifacts,
++      upgrades,
++    };
++
++    if (!cloudData) {
++      // No cloud data, upload local
++      CloudSync.upload(localData);
++      alert('已将本地数据上传到云端！');
++      return;
++    }
++
++    // Merge data
++    const merged = CloudSync.merge(localData, cloudData);
++
++    // Update local state
++    setGameState(prev => ({
++      ...prev,
++      totalCoins: merged.totalCoins,
++      coins: Math.max(prev.coins, merged.totalCoins),
++      artifacts: merged.artifacts,
++    }));
++    setUpgrades(merged.upgrades);
++
++    // Upload merged data back to cloud
++    CloudSync.upload({
++      totalCoins: merged.totalCoins,
++      artifacts: merged.artifacts,
++      upgrades: merged.upgrades,
++    });
++
++    alert('同步完成！已合并云端和本地数据。');
++  };
++
+   // 升级
+   const buyUpgrade = (type: keyof Upgrades) => {
+     const level = upgrades[type];
+@@ -484,9 +568,39 @@ export default function App() {
+ 
+   return (
+     <div className="min-h-screen bg-gradient-to-b from-amber-200 via-orange-300 to-amber-500 flex flex-col items-center justify-center p-4">
+-      <h1 className="text-2xl md:text-4xl font-bold text-amber-900 mb-4 drop-shadow-lg text-center">
++      <h1 className="text-2xl md:text-4xl font-bold text-amber-900 mb-2 drop-shadow-lg text-center">
+         🏜️ 沙丘游侠：宝藏猎手 🐪
+       </h1>
++
++      {/* Cloud sync controls */}
++      <div className="flex gap-2 mb-4">
++        {userId ? (
++          <>
++            <span className="text-amber-800 font-medium self-center">
++              用户: {userId}
++            </span>
++            <button
++              className="bg-blue-500 hover:bg-blue-400 text-white px-3 py-1 rounded-lg text-sm font-bold transition-colors"
++              onClick={handleSync}
++            >
++              🔄 同步
++            </button>
++            <button
++              className="bg-gray-500 hover:bg-gray-400 text-white px-3 py-1 rounded-lg text-sm font-bold transition-colors"
++              onClick={handleLogout}
++            >
++              退出登录
++            </button>
++          </>
++        ) : (
++          <button
++            className="bg-purple-500 hover:bg-purple-400 text-white px-3 py-1 rounded-lg text-sm font-bold transition-colors"
++            onClick={handleLogin}
++          >
++            🚀 登录
++          </button>
++        )}
++      </div>
+       
+       {/* 游戏画面 */}
+       <div 

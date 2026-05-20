@@ -1,0 +1,669 @@
+diff --git a/src/App.tsx b/src/App.tsx
+index 22e120a..aeecfed 100644
+--- a/src/App.tsx
++++ b/src/App.tsx
+@@ -5,12 +5,16 @@ const GAME_WIDTH = 900;
+ const GAME_HEIGHT = 500;
+ const PLAYER_X = 120;
+ const GROUND_Y = 380;
++const FIXED_DT = 16; // 固定物理步长（毫秒）
++const BULLET_TIME_SCALE = 0.3;
+ 
+ // 类型定义
+ interface Enemy {
+   id: number;
+   x: number;
+   y: number;
++  oldX: number;
++  oldY: number;
+   health: number;
+   maxHealth: number;
+   type: 'horse' | 'motorcycle';
+@@ -22,6 +26,8 @@ interface Collectible {
+   id: number;
+   x: number;
+   y: number;
++  oldX: number;
++  oldY: number;
+   type: 'coin' | 'artifact' | 'shield' | 'rapidFire' | 'magnet';
+ }
+ 
+@@ -29,6 +35,8 @@ interface Bullet {
+   id: number;
+   x: number;
+   y: number;
++  oldX: number;
++  oldY: number;
+   vx: number;
+   vy: number;
+ }
+@@ -37,6 +45,8 @@ interface Particle {
+   id: number;
+   x: number;
+   y: number;
++  oldX: number;
++  oldY: number;
+   vx: number;
+   vy: number;
+   life: number;
+@@ -80,6 +90,7 @@ export default function App() {
+   const gameRef = useRef<HTMLDivElement>(null);
+   const animationRef = useRef<number>(0);
+   const lastTimeRef = useRef<number>(0);
++  const accumulatorRef = useRef<number>(0);
+   
+   const [gameState, setGameState] = useState<GameState>({
+     status: 'menu',
+@@ -107,14 +118,17 @@ export default function App() {
+   const [camelFrame, setCamelFrame] = useState(0);
+   const [backgroundOffset, setBackgroundOffset] = useState(0);
+   const [showUpgradePanel, setShowUpgradePanel] = useState(false);
++  const [bulletTimeActive, setBulletTimeActive] = useState(false);
+   
+   const lastShotRef = useRef(0);
+   const idCounterRef = useRef(0);
+   const spawnTimerRef = useRef(0);
+   const collectibleTimerRef = useRef(0);
+   const gameStateRef = useRef(gameState);
++  const bulletTimeActiveRef = useRef(bulletTimeActive);
+   
+   gameStateRef.current = gameState;
++  bulletTimeActiveRef.current = bulletTimeActive;
+ 
+   const getDamage = () => 25 + upgrades.weaponDamage * 15;
+   const getFireRate = () => 400 - upgrades.weaponFireRate * 60;
+@@ -129,6 +143,8 @@ export default function App() {
+         id: idCounterRef.current++,
+         x,
+         y,
++        oldX: x,
++        oldY: y,
+         vx: (Math.random() - 0.5) * 8,
+         vy: (Math.random() - 0.5) * 8 - 2,
+         life: 30,
+@@ -147,10 +163,13 @@ export default function App() {
+     const baseSpeed = type === 'motorcycle' ? 3.5 : 2.5;
+     const baseDamage = type === 'motorcycle' ? 20 : 15;
+     
++    const y = GROUND_Y - 20 - Math.random() * 40;
+     const newEnemy: Enemy = {
+       id: idCounterRef.current++,
+       x: GAME_WIDTH + 50,
+-      y: GROUND_Y - 20 - Math.random() * 40,
++      y,
++      oldX: GAME_WIDTH + 50,
++      oldY: y,
+       health: baseHealth + level * 10,
+       maxHealth: baseHealth + level * 10,
+       type,
+@@ -171,10 +190,13 @@ export default function App() {
+     else if (rand < 0.95) type = 'rapidFire';
+     else type = 'magnet';
+ 
++    const y = GROUND_Y - 60 - Math.random() * 100;
+     const newCollectible: Collectible = {
+       id: idCounterRef.current++,
+       x: GAME_WIDTH + 30,
+-      y: GROUND_Y - 60 - Math.random() * 100,
++      y,
++      oldX: GAME_WIDTH + 30,
++      oldY: y,
+       type,
+     };
+     
+@@ -200,6 +222,8 @@ export default function App() {
+       id: idCounterRef.current++,
+       x: startX,
+       y: startY,
++      oldX: startX,
++      oldY: startY,
+       vx: (dx / distance) * speed,
+       vy: (dy / distance) * speed,
+     };
+@@ -235,50 +259,102 @@ export default function App() {
+     shoot(x, y);
+   };
+ 
+-  // 游戏主循环
+-  const gameLoop = useCallback((timestamp: number) => {
+-    if (gameStateRef.current.status !== 'playing') return;
+-    
+-    const deltaTime = timestamp - lastTimeRef.current;
+-    lastTimeRef.current = timestamp;
+-    
+-    const speed = getSpeed();
++  // Verlet积分更新子弹
++  const verletUpdateBullet = (bullet: Bullet, dt: number): Bullet => {
++    const newX = 2 * bullet.x - bullet.oldX + bullet.vx * (dt / FIXED_DT);
++    const newY = 2 * bullet.y - bullet.oldY + bullet.vy * (dt / FIXED_DT);
++    return {
++      ...bullet,
++      oldX: bullet.x,
++      oldY: bullet.y,
++      x: newX,
++      y: newY,
++    };
++  };
++
++  // Verlet积分更新敌人
++  const verletUpdateEnemy = (enemy: Enemy, dt: number): Enemy => {
++    const newX = 2 * enemy.x - enemy.oldX - enemy.speed * (dt / FIXED_DT);
++    return {
++      ...enemy,
++      oldX: enemy.x,
++      oldY: enemy.y,
++      x: newX,
++    };
++  };
++
++  // Verlet积分更新收集物
++  const verletUpdateCollectible = (collectible: Collectible, dt: number, speed: number): Collectible => {
++    const newX = 2 * collectible.x - collectible.oldX - speed * 1.5 * (dt / FIXED_DT);
++    return {
++      ...collectible,
++      oldX: collectible.x,
++      oldY: collectible.y,
++      x: newX,
++    };
++  };
++
++  // Verlet积分更新粒子
++  const verletUpdateParticle = (particle: Particle, dt: number): Particle => {
++    const newVY = particle.vy + 0.3 * (dt / FIXED_DT);
++    const newX = 2 * particle.x - particle.oldX + particle.vx * (dt / FIXED_DT);
++    const newY = 2 * particle.y - particle.oldY + newVY * (dt / FIXED_DT);
++    return {
++      ...particle,
++      oldX: particle.x,
++      oldY: particle.y,
++      x: newX,
++      y: newY,
++      vy: newVY,
++      life: particle.life - (dt / FIXED_DT),
++    };
++  };
++
++  // 连续碰撞检测
++  const continuousCollisionCheck = (bullet: Bullet, enemy: Enemy): boolean => {
++    // 检测子弹轨迹是否与敌人碰撞
++    const enemyX = enemy.x;
++    const enemyY = enemy.y - 20;
++    const bulletX1 = bullet.oldX;
++    const bulletY1 = bullet.oldY;
++    const bulletX2 = bullet.x;
++    const bulletY2 = bullet.y;
++
++    // 使用线段与圆的碰撞检测
++    const dx = bulletX2 - bulletX1;
++    const dy = bulletY2 - bulletY1;
++    const fx = bulletX1 - enemyX;
++    const fy = bulletY1 - enemyY;
+     
+-    // 更新背景
+-    setBackgroundOffset(prev => (prev + speed) % 600);
+-    setCamelFrame(prev => (prev + 0.15) % 4);
++    const r = 40;
++    const a = dx * dx + dy * dy;
++    const b = 2 * (fx * dx + fy * dy);
++    const c = fx * fx + fy * fy - r * r;
+     
+-    // 更新距离和等级
+-    setGameState(prev => {
+-      const newDistance = prev.distance + speed * 0.1;
+-      const newLevel = Math.min(5, Math.floor(newDistance / 500) + 1);
+-      return { ...prev, distance: newDistance, level: newLevel };
+-    });
++    let discriminant = b * b - 4 * a * c;
++    if (discriminant < 0) return false;
+     
+-    // 生成敌人
+-    spawnTimerRef.current += deltaTime;
+-    const spawnInterval = Math.max(1500 - gameStateRef.current.level * 200, 600);
+-    if (spawnTimerRef.current > spawnInterval) {
+-      spawnEnemy();
+-      spawnTimerRef.current = 0;
+-    }
++    discriminant = Math.sqrt(discriminant);
++    const t1 = (-b - discriminant) / (2 * a);
++    const t2 = (-b + discriminant) / (2 * a);
+     
+-    // 生成收集物
+-    collectibleTimerRef.current += deltaTime;
+-    if (collectibleTimerRef.current > 1200) {
+-      spawnCollectible();
+-      collectibleTimerRef.current = 0;
+-    }
++    // 检查碰撞是否发生在轨迹段上
++    return (t1 >= 0 && t1 <= 1) || (t2 >= 0 && t2 <= 1);
++  };
++
++  // 物理更新子步
++  const physicsSubStep = (dt: number) => {
++    const speed = getSpeed();
+     
+     // 更新子弹
+     setBullets(prev => prev
+-      .map(b => ({ ...b, x: b.x + b.vx, y: b.y + b.vy }))
++      .map(b => verletUpdateBullet(b, dt))
+       .filter(b => b.x < GAME_WIDTH + 50 && b.x > -50 && b.y > -50 && b.y < GAME_HEIGHT + 50)
+     );
+     
+     // 更新粒子
+     setParticles(prev => prev
+-      .map(p => ({ ...p, x: p.x + p.vx, y: p.y + p.vy, vy: p.vy + 0.3, life: p.life - 1 }))
++      .map(p => verletUpdateParticle(p, dt))
+       .filter(p => p.life > 0)
+     );
+     
+@@ -288,12 +364,12 @@ export default function App() {
+       let damage = 0;
+       
+       prev.forEach(enemy => {
+-        const newX = enemy.x - enemy.speed;
+-        if (newX < -50) {
++        const updatedEnemy = verletUpdateEnemy(enemy, dt);
++        if (updatedEnemy.x < -50) {
+           // 敌人逃脱，造成伤害
+           damage += enemy.damage;
+         } else {
+-          updated.push({ ...enemy, x: newX });
++          updated.push(updatedEnemy);
+         }
+       });
+       
+@@ -309,104 +385,158 @@ export default function App() {
+     
+     // 更新收集物位置
+     setCollectibles(prev => prev
+-      .map(c => ({ ...c, x: c.x - speed * 1.5 }))
++      .map(c => verletUpdateCollectible(c, dt, speed))
+       .filter(c => c.x > -50)
+     );
+-    
+-    // 碰撞检测 - 子弹与敌人
++  };
++
++  // 碰撞检测
++  const collisionCheck = (currentBullets: Bullet[], currentEnemies: Enemy[]): { remainingBullets: Bullet[], remainingEnemies: Enemy[] } => {
+     const damage = getDamage();
+-    setBullets(prevBullets => {
+-      const remainingBullets: Bullet[] = [];
++    const remainingBullets: Bullet[] = [];
++    const remainingEnemies: Enemy[] = [];
++    const killedEnemyIds: number[] = [];
++    const hitBulletIds: number[] = [];
++    
++    currentEnemies.forEach(enemy => {
++      let enemyHealth = enemy.health;
++      let wasHit = false;
+       
+-      setEnemies(prevEnemies => {
+-        const remainingEnemies: Enemy[] = [];
+-        const killedEnemyIds: number[] = [];
+-        
+-        prevEnemies.forEach(enemy => {
+-          let enemyHealth = enemy.health;
+-          let wasHit = false;
+-          
+-          prevBullets.forEach(bullet => {
+-            if (killedEnemyIds.includes(enemy.id)) return;
+-            const dx = bullet.x - enemy.x;
+-            const dy = bullet.y - (enemy.y - 20);
+-            if (Math.abs(dx) < 40 && Math.abs(dy) < 40) {
+-              enemyHealth -= damage;
+-              wasHit = true;
+-              // 添加击中效果
+-              createParticles(bullet.x, bullet.y, '#FFD700', 5);
+-            }
+-          });
+-          
+-          if (enemyHealth <= 0) {
+-            // 敌人死亡
+-            killedEnemyIds.push(enemy.id);
+-            setGameState(prev => ({
+-              ...prev,
+-              score: prev.score + (enemy.type === 'motorcycle' ? 50 : 30),
+-              coins: prev.coins + (enemy.type === 'motorcycle' ? 15 : 10),
+-              totalCoins: prev.totalCoins + (enemy.type === 'motorcycle' ? 15 : 10),
+-            }));
+-            createParticles(enemy.x, enemy.y - 20, enemy.type === 'motorcycle' ? '#FF6B6B' : '#8B4513', 15);
+-          } else if (wasHit) {
+-            remainingEnemies.push({ ...enemy, health: enemyHealth });
+-          } else {
+-            remainingEnemies.push(enemy);
+-          }
+-        });
++      currentBullets.forEach(bullet => {
++        if (killedEnemyIds.includes(enemy.id)) return;
++        if (hitBulletIds.includes(bullet.id)) return;
+         
+-        // 过滤掉击中敌人的子弹
+-        prevBullets.forEach(bullet => {
+-          let hit = false;
+-          prevEnemies.forEach(enemy => {
+-            const dx = bullet.x - enemy.x;
+-            const dy = bullet.y - (enemy.y - 20);
+-            if (Math.abs(dx) < 40 && Math.abs(dy) < 40) {
+-              hit = true;
+-            }
+-          });
+-          if (!hit) remainingBullets.push(bullet);
+-        });
+-        
+-        return remainingEnemies;
++        // 使用连续碰撞检测
++        if (continuousCollisionCheck(bullet, enemy)) {
++          enemyHealth -= damage;
++          wasHit = true;
++          hitBulletIds.push(bullet.id);
++          createParticles(bullet.x, bullet.y, '#FFD700', 5);
++        }
+       });
+       
+-      return remainingBullets;
++      if (enemyHealth <= 0) {
++        killedEnemyIds.push(enemy.id);
++        setGameState(prev => ({
++          ...prev,
++          score: prev.score + (enemy.type === 'motorcycle' ? 50 : 30),
++          coins: prev.coins + (enemy.type === 'motorcycle' ? 15 : 10),
++          totalCoins: prev.totalCoins + (enemy.type === 'motorcycle' ? 15 : 10),
++        }));
++        createParticles(enemy.x, enemy.y - 20, enemy.type === 'motorcycle' ? '#FF6B6B' : '#8B4513', 15);
++      } else if (wasHit) {
++        remainingEnemies.push({ ...enemy, health: enemyHealth });
++      } else {
++        remainingEnemies.push(enemy);
++      }
+     });
+     
+-    // 碰撞检测 - 收集物
+-    setCollectibles(prev => {
+-      const remaining: Collectible[] = [];
++    currentBullets.forEach(bullet => {
++      if (!hitBulletIds.includes(bullet.id)) {
++        remainingBullets.push(bullet);
++      }
++    });
++    
++    return { remainingBullets, remainingEnemies };
++  };
++
++  // 收集物碰撞检测
++  const collectibleCollisionCheck = (currentCollectibles: Collectible[]): Collectible[] => {
++    const remaining: Collectible[] = [];
++    
++    currentCollectibles.forEach(c => {
++      const dx = c.x - PLAYER_X;
++      const dy = c.y - (GROUND_Y - 50);
++      if (Math.abs(dx) < 60 && Math.abs(dy) < 60) {
++        createParticles(c.x, c.y, c.type === 'coin' ? '#FFD700' : '#9333EA', 8);
++        
++        setGameState(prevState => {
++          switch (c.type) {
++            case 'coin':
++              return { ...prevState, coins: prevState.coins + 5, score: prevState.score + 5, totalCoins: prevState.totalCoins + 5 };
++            case 'artifact':
++              return { ...prevState, artifacts: prevState.artifacts + 1, score: prevState.score + 100 };
++            case 'shield':
++              return { ...prevState, health: Math.min(prevState.maxHealth, prevState.health + 30) };
++            case 'rapidFire':
++            case 'magnet':
++              return { ...prevState, score: prevState.score + 50 };
++            default:
++              return prevState;
++          }
++        });
++      } else {
++        remaining.push(c);
++      }
++    });
++    
++    return remaining;
++  };
++
++  // 游戏主循环
++  const gameLoop = useCallback((timestamp: number) => {
++    if (gameStateRef.current.status !== 'playing') return;
++    
++    const realDeltaTime = timestamp - lastTimeRef.current;
++    lastTimeRef.current = timestamp;
++    
++    const timeScale = bulletTimeActiveRef.current ? BULLET_TIME_SCALE : 1;
++    const scaledDeltaTime = realDeltaTime * timeScale;
++    
++    accumulatorRef.current += scaledDeltaTime;
++    
++    const speed = getSpeed();
++    
++    // 更新背景（不受时间缩放影响，保持视觉流畅）
++    setBackgroundOffset(prev => (prev + speed * (realDeltaTime / 16)) % 600);
++    setCamelFrame(prev => (prev + 0.15 * (realDeltaTime / 16)) % 4);
++    
++    // 更新距离和等级（使用缩放时间）
++    setGameState(prev => {
++      const newDistance = prev.distance + speed * 0.1 * (scaledDeltaTime / 16);
++      const newLevel = Math.min(5, Math.floor(newDistance / 500) + 1);
++      return { ...prev, distance: newDistance, level: newLevel };
++    });
++    
++    // 生成敌人（使用缩放时间）
++    spawnTimerRef.current += scaledDeltaTime;
++    const spawnInterval = Math.max(1500 - gameStateRef.current.level * 200, 600);
++    if (spawnTimerRef.current > spawnInterval) {
++      spawnEnemy();
++      spawnTimerRef.current = 0;
++    }
++    
++    // 生成收集物（使用缩放时间）
++    collectibleTimerRef.current += scaledDeltaTime;
++    if (collectibleTimerRef.current > 1200) {
++      spawnCollectible();
++      collectibleTimerRef.current = 0;
++    }
++    
++    // 固定时间步长物理更新
++    let currentBullets = [...bullets];
++    let currentEnemies = [...enemies];
++    let currentCollectibles = [...collectibles];
++    
++    while (accumulatorRef.current >= FIXED_DT) {
++      // 执行物理子步
++      physicsSubStep(FIXED_DT);
+       
+-      prev.forEach(c => {
+-        const dx = c.x - PLAYER_X;
+-        const dy = c.y - (GROUND_Y - 50);
+-        if (Math.abs(dx) < 60 && Math.abs(dy) < 60) {
+-          // 收集到物品
+-          createParticles(c.x, c.y, c.type === 'coin' ? '#FFD700' : '#9333EA', 8);
+-          
+-          setGameState(prevState => {
+-            switch (c.type) {
+-              case 'coin':
+-                return { ...prevState, coins: prevState.coins + 5, score: prevState.score + 5, totalCoins: prevState.totalCoins + 5 };
+-              case 'artifact':
+-                return { ...prevState, artifacts: prevState.artifacts + 1, score: prevState.score + 100 };
+-              case 'shield':
+-                return { ...prevState, health: Math.min(prevState.maxHealth, prevState.health + 30) };
+-              case 'rapidFire':
+-              case 'magnet':
+-                return { ...prevState, score: prevState.score + 50 };
+-              default:
+-                return prevState;
+-            }
+-          });
+-        } else {
+-          remaining.push(c);
+-        }
+-      });
++      // 碰撞检测（在每个子步后执行）
++      const result = collisionCheck(currentBullets, currentEnemies);
++      currentBullets = result.remainingBullets;
++      currentEnemies = result.remainingEnemies;
+       
+-      return remaining;
+-    });
++      // 收集物碰撞检测
++      currentCollectibles = collectibleCollisionCheck(currentCollectibles);
++      
++      accumulatorRef.current -= FIXED_DT;
++    }
++    
++    // 更新状态
++    setBullets(currentBullets);
++    setEnemies(currentEnemies);
++    setCollectibles(currentCollectibles);
+     
+     // 检查游戏结束
+     if (gameStateRef.current.health <= 0) {
+@@ -415,12 +545,25 @@ export default function App() {
+     }
+     
+     animationRef.current = requestAnimationFrame(gameLoop);
+-  }, [spawnEnemy, spawnCollectible, upgrades]);
++  }, [spawnEnemy, spawnCollectible, upgrades, bullets, enemies, collectibles]);
++
++  // 键盘事件处理
++  useEffect(() => {
++    const handleKeyDown = (e: KeyboardEvent) => {
++      if (e.key === 't' || e.key === 'T') {
++        setBulletTimeActive(prev => !prev);
++      }
++    };
++    
++    window.addEventListener('keydown', handleKeyDown);
++    return () => window.removeEventListener('keydown', handleKeyDown);
++  }, []);
+ 
+   // 开始游戏循环
+   useEffect(() => {
+     if (gameState.status === 'playing') {
+       lastTimeRef.current = performance.now();
++      accumulatorRef.current = 0;
+       animationRef.current = requestAnimationFrame(gameLoop);
+     }
+     
+@@ -450,6 +593,7 @@ export default function App() {
+     setParticles([]);
+     spawnTimerRef.current = 0;
+     collectibleTimerRef.current = 0;
++    setBulletTimeActive(false);
+   };
+ 
+   // 返回主菜单
+@@ -460,6 +604,7 @@ export default function App() {
+       coins: prev.totalCoins,
+     }));
+     setShowUpgradePanel(false);
++    setBulletTimeActive(false);
+   };
+ 
+   // 升级
+@@ -491,15 +636,21 @@ export default function App() {
+       {/* 游戏画面 */}
+       <div 
+         ref={gameRef}
+-        className="relative w-full max-w-4xl h-64 md:h-80 lg:h-96 bg-gradient-to-b from-sky-400 via-sky-300 to-amber-200 rounded-xl overflow-hidden shadow-2xl border-4 border-amber-700 cursor-crosshair select-none"
++        className={`relative w-full max-w-4xl h-64 md:h-80 lg:h-96 rounded-xl overflow-hidden shadow-2xl border-4 cursor-crosshair select-none transition-all duration-300 ${
++          bulletTimeActive 
++            ? 'bg-gradient-to-b from-blue-400 via-blue-300 to-blue-200 border-blue-700' 
++            : 'bg-gradient-to-b from-sky-400 via-sky-300 to-amber-200 border-amber-700'
++        }`}
+         onClick={handleClick}
+         onTouchStart={handleTouch}
+         style={{ aspectRatio: '16/9', maxHeight: '500px' }}
+       >
+         {/* 背景层 */}
+         <div className="absolute inset-0 overflow-hidden">
+-          {/* 太阳 */}
+-          <div className="absolute top-4 right-8 w-12 h-12 md:w-16 md:h-16 bg-yellow-300 rounded-full shadow-lg animate-pulse" />
++          {/* 太阳/月亮 */}
++          <div className={`absolute top-4 right-8 w-12 h-12 md:w-16 md:h-16 rounded-full shadow-lg transition-all duration-500 ${
++            bulletTimeActive ? 'bg-gray-300' : 'bg-yellow-300 animate-pulse'
++          }`} />
+           
+           {/* 云朵 */}
+           <div 
+@@ -571,17 +722,40 @@ export default function App() {
+                 <span>🏆 {gameState.score}</span>
+                 <span>⭐ {gameState.level}</span>
+               </div>
++              {/* 子弹时间指示 */}
++              {bulletTimeActive && (
++                <div className="mt-2 flex items-center gap-1 text-blue-300 font-bold animate-pulse">
++                  ⏱️ 子弹时间激活！
++                </div>
++              )}
+             </div>
+             
+-            <button 
+-              className="bg-red-500 hover:bg-red-600 text-white px-3 py-1 rounded-lg text-xs md:text-sm pointer-events-auto transition-colors"
+-              onClick={(e) => {
+-                e.stopPropagation();
+-                goToMenu();
+-              }}
+-            >
+-              退出
+-            </button>
++            <div className="flex gap-2">
++              {/* 子弹时间切换按钮 */}
++              <button 
++                className={`px-3 py-1 rounded-lg text-xs md:text-sm pointer-events-auto transition-colors font-bold ${
++                  bulletTimeActive 
++                    ? 'bg-blue-500 hover:bg-blue-600 text-white' 
++                    : 'bg-gray-500 hover:bg-gray-600 text-white'
++                }`}
++                onClick={(e) => {
++                  e.stopPropagation();
++                  setBulletTimeActive(prev => !prev);
++                }}
++              >
++                ⏱️ T键
++              </button>
++              
++              <button 
++                className="bg-red-500 hover:bg-red-600 text-white px-3 py-1 rounded-lg text-xs md:text-sm pointer-events-auto transition-colors"
++                onClick={(e) => {
++                  e.stopPropagation();
++                  goToMenu();
++                }}
++              >
++                退出
++              </button>
++            </div>
+           </div>
+         )}
+         
+@@ -693,9 +867,12 @@ export default function App() {
+             <p className="text-amber-200 text-sm md:text-base mb-4 text-center px-4">
+               在广袤的沙漠中收集宝藏，击退土匪！
+             </p>
+-            <p className="text-yellow-300 text-lg md:text-xl mb-4">
++            <p className="text-yellow-300 text-lg md:text-xl mb-2">
+               💰 金币: {gameState.coins} | 💎 神器: {gameState.artifacts}
+             </p>
++            <p className="text-blue-300 text-sm mb-4">
++              ⏱️ 按T键或点击按钮激活子弹时间
++            </p>
+             
+             <div className="flex flex-col gap-3">
+               <button 
+@@ -758,7 +935,7 @@ export default function App() {
+             )}
+             
+             <div className="mt-4 text-amber-300 text-xs md:text-sm text-center px-4">
+-              💡 点击屏幕射击土匪 | 收集金币和道具
++              💡 点击屏幕射击土匪 | 收集金币和道具 | 按T键使用子弹时间
+             </div>
+           </div>
+         )}
+@@ -796,7 +973,7 @@ export default function App() {
+       {/* 底部说明 */}
+       <div className="mt-4 text-amber-900 text-xs md:text-sm text-center max-w-lg">
+         <p>🎯 点击屏幕射击土匪 | 🪙 收集金币升级装备 | 💎 收集神器碎片</p>
+-        <p className="mt-1">🛡️ 护盾恢复生命 | ⚡ 快速射击 | 🧲 磁吸金币</p>
++        <p className="mt-1">🛡️ 护盾恢复生命 | ⚡ 快速射击 | 🧲 磁吸金币 | ⏱️ 按T键使用子弹时间</p>
+       </div>
+     </div>
+   );

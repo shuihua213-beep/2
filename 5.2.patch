@@ -1,0 +1,335 @@
+diff --git a/src/App.tsx b/src/App.tsx
+index 22e120a..4db839a 100644
+--- a/src/App.tsx
++++ b/src/App.tsx
+@@ -1,4 +1,4 @@
+-import { useState, useEffect, useCallback, useRef } from 'react';
++import React, { useState, useEffect, useCallback, useRef } from 'react';
+ 
+ // 游戏常量
+ const GAME_WIDTH = 900;
+@@ -11,6 +11,8 @@ interface Enemy {
+   id: number;
+   x: number;
+   y: number;
++  prevX?: number;
++  prevY?: number;
+   health: number;
+   maxHealth: number;
+   type: 'horse' | 'motorcycle';
+@@ -29,6 +31,8 @@ interface Bullet {
+   id: number;
+   x: number;
+   y: number;
++  prevX?: number;
++  prevY?: number;
+   vx: number;
+   vy: number;
+ }
+@@ -76,6 +80,93 @@ const UPGRADE_NAMES: Record<keyof Upgrades, string> = {
+   camelSpeed: '🐪 移动速度',
+ };
+ 
++// --- RK4 Integration ---
++const rk4Step = (
++  state: { x: number, y: number, vx: number, vy: number },
++  getAcc: (s: { x: number, y: number, vx: number, vy: number }) => { ax: number, ay: number },
++  dt: number
++) => {
++  const evaluate = (initial: any, t: number, dt: number, derivative: any) => {
++    const s = {
++      x: initial.x + derivative.dx * dt,
++      y: initial.y + derivative.dy * dt,
++      vx: initial.vx + derivative.dvx * dt,
++      vy: initial.vy + derivative.dvy * dt,
++    };
++    const acc = getAcc(s);
++    return { dx: s.vx, dy: s.vy, dvx: acc.ax, dvy: acc.ay };
++  };
++
++  const a = evaluate(state, 0, 0, { dx: 0, dy: 0, dvx: 0, dvy: 0 });
++  const b = evaluate(state, dt * 0.5, dt * 0.5, a);
++  const c = evaluate(state, dt * 0.5, dt * 0.5, b);
++  const d = evaluate(state, dt, dt, c);
++
++  const dxdt = 1.0 / 6.0 * (a.dx + 2.0 * (b.dx + c.dx) + d.dx);
++  const dydt = 1.0 / 6.0 * (a.dy + 2.0 * (b.dy + c.dy) + d.dy);
++  const dvxdt = 1.0 / 6.0 * (a.dvx + 2.0 * (b.dvx + c.dvx) + d.dvx);
++  const dvydt = 1.0 / 6.0 * (a.dvy + 2.0 * (b.dvy + c.dvy) + d.dvy);
++
++  return {
++    x: state.x + dxdt * dt,
++    y: state.y + dydt * dt,
++    vx: state.vx + dvxdt * dt,
++    vy: state.vy + dvydt * dt,
++  };
++};
++
++// --- CCD Collision Detection ---
++function checkCollisionCCD(
++  b0: {x: number, y: number}, b1: {x: number, y: number},
++  e0: {x: number, y: number}, e1: {x: number, y: number}
++): boolean {
++  const rx0 = b0.x - e0.x;
++  const ry0 = b0.y - (e0.y - 20);
++  const rx1 = b1.x - e1.x;
++  const ry1 = b1.y - (e1.y - 20);
++
++  if (Math.abs(rx0) < 40 && Math.abs(ry0) < 40) return true;
++  if (Math.abs(rx1) < 40 && Math.abs(ry1) < 40) return true;
++
++  const minX = -40, maxX = 40, minY = -40, maxY = 40;
++  
++  if ((rx0 < minX && rx1 < minX) || (rx0 > maxX && rx1 > maxX) ||
++      (ry0 < minY && ry1 < minY) || (ry0 > maxY && ry1 > maxY)) {
++    return false;
++  }
++
++  const dx = rx1 - rx0;
++  const dy = ry1 - ry0;
++  
++  if (dx !== 0) {
++    const t1 = (minX - rx0) / dx;
++    if (t1 >= 0 && t1 <= 1) {
++      const y = ry0 + t1 * dy;
++      if (y >= minY && y <= maxY) return true;
++    }
++    const t2 = (maxX - rx0) / dx;
++    if (t2 >= 0 && t2 <= 1) {
++      const y = ry0 + t2 * dy;
++      if (y >= minY && y <= maxY) return true;
++    }
++  }
++  
++  if (dy !== 0) {
++    const t3 = (minY - ry0) / dy;
++    if (t3 >= 0 && t3 <= 1) {
++      const x = rx0 + t3 * dx;
++      if (x >= minX && x <= maxX) return true;
++    }
++    const t4 = (maxY - ry0) / dy;
++    if (t4 >= 0 && t4 <= 1) {
++      const x = rx0 + t4 * dx;
++      if (x >= minX && x <= maxX) return true;
++    }
++  }
++
++  return false;
++}
++
+ export default function App() {
+   const gameRef = useRef<HTMLDivElement>(null);
+   const animationRef = useRef<number>(0);
+@@ -107,7 +198,10 @@ export default function App() {
+   const [camelFrame, setCamelFrame] = useState(0);
+   const [backgroundOffset, setBackgroundOffset] = useState(0);
+   const [showUpgradePanel, setShowUpgradePanel] = useState(false);
++  const [isBulletTime, setIsBulletTime] = useState(false);
+   
++  const timeScaleRef = useRef(1.0);
++  const gameTimeRef = useRef(0);
+   const lastShotRef = useRef(0);
+   const idCounterRef = useRef(0);
+   const spawnTimerRef = useRef(0);
+@@ -121,6 +215,20 @@ export default function App() {
+   const getMaxHealth = () => 100 + upgrades.camelHealth * 25;
+   const getSpeed = () => 2 + upgrades.camelSpeed * 0.5;
+ 
++  useEffect(() => {
++    const handleKeyDown = (e: KeyboardEvent) => {
++      if (e.key.toLowerCase() === 't') {
++        setIsBulletTime(prev => {
++          const next = !prev;
++          timeScaleRef.current = next ? 0.3 : 1.0;
++          return next;
++        });
++      }
++    };
++    window.addEventListener('keydown', handleKeyDown);
++    return () => window.removeEventListener('keydown', handleKeyDown);
++  }, []);
++
+   // 创建粒子效果
+   const createParticles = (x: number, y: number, color: string, count: number) => {
+     const newParticles: Particle[] = [];
+@@ -183,7 +291,7 @@ export default function App() {
+ 
+   // 射击
+   const shoot = useCallback((targetX: number, targetY: number) => {
+-    const now = Date.now();
++    const now = gameTimeRef.current;
+     if (now - lastShotRef.current < getFireRate()) return;
+     if (gameStateRef.current.status !== 'playing') return;
+     
+@@ -200,6 +308,8 @@ export default function App() {
+       id: idCounterRef.current++,
+       x: startX,
+       y: startY,
++      prevX: startX,
++      prevY: startY,
+       vx: (dx / distance) * speed,
+       vy: (dy / distance) * speed,
+     };
+@@ -239,24 +349,29 @@ export default function App() {
+   const gameLoop = useCallback((timestamp: number) => {
+     if (gameStateRef.current.status !== 'playing') return;
+     
+-    const deltaTime = timestamp - lastTimeRef.current;
++    let dt = timestamp - lastTimeRef.current;
++    if (dt > 100) dt = 100;
+     lastTimeRef.current = timestamp;
+     
++    const scaledDt = dt * timeScaleRef.current;
++    gameTimeRef.current += scaledDt;
++    const dtFrames = scaledDt / (1000 / 60);
++    
+     const speed = getSpeed();
+     
+     // 更新背景
+-    setBackgroundOffset(prev => (prev + speed) % 600);
+-    setCamelFrame(prev => (prev + 0.15) % 4);
++    setBackgroundOffset(prev => (prev + speed * dtFrames) % 600);
++    setCamelFrame(prev => (prev + 0.15 * dtFrames) % 4);
+     
+     // 更新距离和等级
+     setGameState(prev => {
+-      const newDistance = prev.distance + speed * 0.1;
++      const newDistance = prev.distance + speed * 0.1 * dtFrames;
+       const newLevel = Math.min(5, Math.floor(newDistance / 500) + 1);
+       return { ...prev, distance: newDistance, level: newLevel };
+     });
+     
+     // 生成敌人
+-    spawnTimerRef.current += deltaTime;
++    spawnTimerRef.current += scaledDt;
+     const spawnInterval = Math.max(1500 - gameStateRef.current.level * 200, 600);
+     if (spawnTimerRef.current > spawnInterval) {
+       spawnEnemy();
+@@ -264,7 +379,7 @@ export default function App() {
+     }
+     
+     // 生成收集物
+-    collectibleTimerRef.current += deltaTime;
++    collectibleTimerRef.current += scaledDt;
+     if (collectibleTimerRef.current > 1200) {
+       spawnCollectible();
+       collectibleTimerRef.current = 0;
+@@ -272,13 +387,19 @@ export default function App() {
+     
+     // 更新子弹
+     setBullets(prev => prev
+-      .map(b => ({ ...b, x: b.x + b.vx, y: b.y + b.vy }))
++      .map(b => {
++        const next = rk4Step({ x: b.x, y: b.y, vx: b.vx, vy: b.vy }, () => ({ ax: 0, ay: 0 }), dtFrames);
++        return { ...b, prevX: b.x, prevY: b.y, x: next.x, y: next.y, vx: next.vx, vy: next.vy };
++      })
+       .filter(b => b.x < GAME_WIDTH + 50 && b.x > -50 && b.y > -50 && b.y < GAME_HEIGHT + 50)
+     );
+     
+     // 更新粒子
+     setParticles(prev => prev
+-      .map(p => ({ ...p, x: p.x + p.vx, y: p.y + p.vy, vy: p.vy + 0.3, life: p.life - 1 }))
++      .map(p => {
++        const next = rk4Step({ x: p.x, y: p.y, vx: p.vx, vy: p.vy }, () => ({ ax: 0, ay: 0.3 }), dtFrames);
++        return { ...p, x: next.x, y: next.y, vx: next.vx, vy: next.vy, life: p.life - dtFrames };
++      })
+       .filter(p => p.life > 0)
+     );
+     
+@@ -288,12 +409,12 @@ export default function App() {
+       let damage = 0;
+       
+       prev.forEach(enemy => {
+-        const newX = enemy.x - enemy.speed;
+-        if (newX < -50) {
++        const next = rk4Step({ x: enemy.x, y: enemy.y, vx: -enemy.speed, vy: 0 }, () => ({ ax: 0, ay: 0 }), dtFrames);
++        if (next.x < -50) {
+           // 敌人逃脱，造成伤害
+           damage += enemy.damage;
+         } else {
+-          updated.push({ ...enemy, x: newX });
++          updated.push({ ...enemy, prevX: enemy.x, prevY: enemy.y, x: next.x, y: next.y });
+         }
+       });
+       
+@@ -309,7 +430,10 @@ export default function App() {
+     
+     // 更新收集物位置
+     setCollectibles(prev => prev
+-      .map(c => ({ ...c, x: c.x - speed * 1.5 }))
++      .map(c => {
++        const next = rk4Step({ x: c.x, y: c.y, vx: -speed * 1.5, vy: 0 }, () => ({ ax: 0, ay: 0 }), dtFrames);
++        return { ...c, x: next.x, y: next.y };
++      })
+       .filter(c => c.x > -50)
+     );
+     
+@@ -328,9 +452,13 @@ export default function App() {
+           
+           prevBullets.forEach(bullet => {
+             if (killedEnemyIds.includes(enemy.id)) return;
+-            const dx = bullet.x - enemy.x;
+-            const dy = bullet.y - (enemy.y - 20);
+-            if (Math.abs(dx) < 40 && Math.abs(dy) < 40) {
++            
++            const b0 = { x: bullet.prevX ?? bullet.x, y: bullet.prevY ?? bullet.y };
++            const b1 = { x: bullet.x, y: bullet.y };
++            const e0 = { x: enemy.prevX ?? enemy.x, y: enemy.prevY ?? enemy.y };
++            const e1 = { x: enemy.x, y: enemy.y };
++            
++            if (checkCollisionCCD(b0, b1, e0, e1)) {
+               enemyHealth -= damage;
+               wasHit = true;
+               // 添加击中效果
+@@ -359,9 +487,12 @@ export default function App() {
+         prevBullets.forEach(bullet => {
+           let hit = false;
+           prevEnemies.forEach(enemy => {
+-            const dx = bullet.x - enemy.x;
+-            const dy = bullet.y - (enemy.y - 20);
+-            if (Math.abs(dx) < 40 && Math.abs(dy) < 40) {
++            const b0 = { x: bullet.prevX ?? bullet.x, y: bullet.prevY ?? bullet.y };
++            const b1 = { x: bullet.x, y: bullet.y };
++            const e0 = { x: enemy.prevX ?? enemy.x, y: enemy.prevY ?? enemy.y };
++            const e1 = { x: enemy.x, y: enemy.y };
++            
++            if (checkCollisionCCD(b0, b1, e0, e1)) {
+               hit = true;
+             }
+           });
+@@ -450,6 +581,9 @@ export default function App() {
+     setParticles([]);
+     spawnTimerRef.current = 0;
+     collectibleTimerRef.current = 0;
++    gameTimeRef.current = 0;
++    lastShotRef.current = -getFireRate();
++    lastTimeRef.current = performance.now();
+   };
+ 
+   // 返回主菜单
+@@ -573,6 +707,13 @@ export default function App() {
+               </div>
+             </div>
+             
++            {/* 子弹时间指示器 */}
++            {isBulletTime && (
++              <div className="absolute top-16 left-1/2 -translate-x-1/2 bg-blue-500/80 text-white px-6 py-2 rounded-full animate-pulse border-2 border-blue-300 font-bold tracking-widest shadow-[0_0_20px_rgba(59,130,246,0.8)] text-sm md:text-base pointer-events-none">
++                ⏱️ BULLET TIME
++              </div>
++            )}
++            
+             <button 
+               className="bg-red-500 hover:bg-red-600 text-white px-3 py-1 rounded-lg text-xs md:text-sm pointer-events-auto transition-colors"
+               onClick={(e) => {
+@@ -794,9 +935,9 @@ export default function App() {
+       </div>
+       
+       {/* 底部说明 */}
+-      <div className="mt-4 text-amber-900 text-xs md:text-sm text-center max-w-lg">
++      <div className="mt-4 text-amber-900 text-xs md:text-sm text-center max-w-lg font-medium">
+         <p>🎯 点击屏幕射击土匪 | 🪙 收集金币升级装备 | 💎 收集神器碎片</p>
+-        <p className="mt-1">🛡️ 护盾恢复生命 | ⚡ 快速射击 | 🧲 磁吸金币</p>
++        <p className="mt-1">🛡️ 护盾恢复生命 | ⚡ 快速射击 | 🧲 磁吸金币 | ⏱️ 按 T 键切换子弹时间</p>
+       </div>
+     </div>
+   );
